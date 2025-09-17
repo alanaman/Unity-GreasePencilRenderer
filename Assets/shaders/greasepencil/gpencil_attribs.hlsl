@@ -1,3 +1,5 @@
+#pragma once
+
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
 struct Attributes
@@ -12,22 +14,28 @@ struct Attributes
 struct Varyings
 {
     float4 positionHCS : SV_POSITION;
-    float3 normal : NORMAL;
     float3 wPosition : WORLD_POSITION;
     float2 uv : TEXCOORD0;
-    // float4 color_mul : TEXCOORD0;
-    // float4 color_add : TEXCOORD1;
+    float4 color_mul : COLOR;
+    float4 color_add : COLOR1;
     // float3 pos : TEXCOORD2;
     // //flat
-    float2 aspect : ASPECT;
-    // float4 sspos : TEXCOORD5;
-    // uint mat_flag : TEXCOORD6;
-    // float depth : TEXCOORD7;
+    nointerpolation float2 aspect : ASPECT;
+    nointerpolation float4 sspos : SSPOS;
+    nointerpolation uint mat_flag : MAT_FLAG;
+    nointerpolation  float depth : DEPTH;
     // //no perspective
-    float2 thickness : RADIUS;
-    float hardness : HARDNESS;
+    noperspective float2 thickness : RADIUS;
+    noperspective float hardness : HARDNESS;
     // float index;
     float opacity : OPACITY;
+};
+
+struct FragOutput
+{
+    float4 color : SV_Target;
+    // float4 revealColor : REVEAL_COLOR;
+    // float depth : SV_Depth;
 };
 
 TEXTURE2D(_BaseMap);

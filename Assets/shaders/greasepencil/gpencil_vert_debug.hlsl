@@ -133,21 +133,18 @@ Varyings vert(Attributes IN)
         float3 wpos1 = TransformObjectToWorld(pos1.xyz);
         float3 wpos2 = TransformObjectToWorld(pos2.xyz);
 
-        float3 tangent;
-        if (is_dot) {
-            /* Shade as facing billboards. */
-            tangent = unity_CameraToWorld[0].xyz;
-        }
-        else if (is_on_p1 && p0.mat != -1) {
-            tangent = wpos1 - wpos_adj;
-        }
-        else {
-            tangent = wpos2 - wpos1;
-        }
-        tangent = safe_normalize(tangent);
-        
-        float3 normal = cross(tangent, unity_CameraToWorld[2].xyz);
-        OUT.normal = normalize(cross(normal, tangent));
+        // float3 tangent;
+        // if (is_dot) {
+        //     /* Shade as facing billboards. */
+        //     tangent = unity_CameraToWorld[0].xyz;
+        // }
+        // else if (is_on_p1 && p0.mat != -1) {
+        //     tangent = wpos1 - wpos_adj;
+        // }
+        // else {
+        //     tangent = wpos2 - wpos1;
+        // }
+        // tangent = safe_normalize(tangent);
 
         // //TODO remove
         // wpos1.y += y * 0.1;
@@ -218,13 +215,42 @@ Varyings vert(Attributes IN)
         OUT.uv.x = (is_on_p1) ? p1.u_stroke : p2.u_stroke;
 
         //end stroke
+
+
         
+        OUT.mat_flag = asuint(material_flags) & ~GP_FILL_FLAGS;
+
+        if (gp_stroke_order3d) {
+            /* Use the fragment depth (see fragment shader). */
+            OUT.depth = -1.0f;
+        }
+        else if (flag_test(material_flags, GP_STROKE_OVERLAP)) {
+            /* Use the index of the point as depth.
+             * This means the stroke can overlap itself. */
+            OUT.depth = (abs(p1.signed_point_id) + gp_stroke_index_offset + 2.0f) * 0.0000002f;
+        }
+        else {
+            /* Use the index of first point of the stroke as depth.
+            * We render using a greater depth test this means the stroke
+            * cannot overlap itself.
+            * We offset by one so that the fill can be overlapped by its stroke.
+            * The offset is ok since we pad the strokes data because of adjacency infos. */
+            OUT.depth = (abs(p1.signed_point_id) + gp_stroke_index_offset + 2.0f) * 0.0000002f;
+        }
         // out_color = (use_curr) ? col1 : col2;
+    }
+    else
+    {
+        
+        OUT.mat_flag = asuint(material_flags) & GP_FILL_FLAGS;
+        OUT.mat_flag |= uint(p1.mat + gp_material_offset) << GPENCIl_MATID_SHIFT;
     }
     // Manually transform from object space to world space using your matrix
     // float4 worldPos = mul(_ObjectToWorld, float4(outp.xyz, 1.0));
     //
     // // Then transform from world space to clip space
     // OUT.positionHCS = mul(UNITY_MATRIX_VP, worldPos);
+
+    
     return OUT;        
 }

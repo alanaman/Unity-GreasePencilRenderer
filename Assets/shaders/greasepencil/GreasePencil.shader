@@ -19,11 +19,7 @@ Shader "Custom/GreasePencil"
             #pragma fragment frag
 
             #include "gpencil_vert_debug.hlsl"
-
-            float4 frag(Varyings input) : SV_Target
-            {
-                return  float4(0,1,0,0);
-            }
+            #include "gpencil_frag.hlsl"
 
             ENDHLSL
         }
