@@ -1,0 +1,138 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5daa0103ce66499e9e4cf3bd0204fa85, type: 3}
+  m_Name: grease_pencil_export
+  m_EditorClassIdentifier: Assembly-CSharp::GreasePencilSO
+  data:
+    materials:
+    - name: Stroke
+      stroke_color:
+      - 1
+      - 0
+      - 0.008308748
+      - 1
+      fill_color:
+      - 0
+      - 1
+      - 0.0028861086
+      - 1
+      fill_mix_color:
+      - 1
+      - 1
+      - 1
+      - 1
+      fill_uv_rot_scale:
+      - 1
+      - 1
+      - 0
+      - 0
+      fill_uv_offset:
+      - -0.5
+      - 0
+      alignment_rot:
+      - 0
+      - 0
+      stroke_texture_mix: 0
+      stroke_u_scale: 100
+      fill_texture_mix: 0.5
+      flag: 0
+    - name: Empty Fill
+      stroke_color:
+      - 0
+      - 0
+      - 0
+      - 1
+      fill_color:
+      - 1
+      - 1
+      - 1
+      - 1
+      fill_mix_color:
+      - 1
+      - 1
+      - 1
+      - 1
+      fill_uv_rot_scale:
+      - 1
+      - 1
+      - 0
+      - 0
+      fill_uv_offset:
+      - -0.5
+      - 0
+      alignment_rot:
+      - 0
+      - 0
+      stroke_texture_mix: 0
+      stroke_u_scale: 100
+      fill_texture_mix: 0.5
+      flag: 0
+    layers:
+    - name: Lines
+      tint_color:
+      - 0
+      - 0
+      - 0
+      tint_factor: 0
+      opacity: 1
+      frames:
+      - frame_number: 1
+        strokes:
+        - material_index: 0
+          aspect_ratio: 1
+          cyclic: 0
+          end_cap: 0
+          start_cap: 0
+          softness: 0
+          fill_color:
+          - 0
+          - 0
+          - 0
+          - 0
+          fill_opacity: 0
+          points:
+          - position:
+            - -1.007071
+            - -1.007071
+            - 0
+            radius: 0.13776569
+            opacity: 0
+            rotation: 0
+            vertex_color:
+            - 0
+            - 0
+            - 0
+            - 0
+          - position:
+            - 1.007071
+            - -1.007071
+            - 0
+            radius: 0.13776569
+            opacity: 0
+            rotation: 0
+            vertex_color:
+            - 0
+            - 0
+            - 0
+            - 0
+          - position:
+            - -1.898993
+            - -1.007071
+            - 1.7012936
+            radius: 0.13776569
+            opacity: 0
+            rotation: 0
+            vertex_color:
+            - 0
+            - 0
+            - 0
+            - 0
