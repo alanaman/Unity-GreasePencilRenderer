@@ -1,16 +1,75 @@
 #pragma once
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-#include "draw_grease_pencil_lib.hlsl"
 #include "gpencil_info.hh"
 #include "gpencil_attribs.hlsl"
+#include "common_shader_util.hlsl"
+
+bool g_pencil_is_stroke_vertex(uint vertexId)
+{
+    return flag_test(vertexId, (uint)GP_IS_STROKE_VERTEX_BIT);
+}
+
+inline bool is_cyclic(GreasePencilStrokeVert vert)
+{
+    return vert.signed_point_id < 0;
+}
+
+float2 g_pencil_project_to_screenspace(float4 v)
+{
+    return ((v.xy / v.w) * 0.5f + 0.5f) * _ScreenParams.xy;
+}
+
+float g_pencil_decode_hardness(int packed_data)
+{
+    return float((uint(packed_data) & 0x3FC0000u) >> 18u) * (1.0f / 255.0f);
+}
+
+// The function MUST use the clip-space position to get the w component
+float g_pencil_stroke_radius_modulate(float radius)
+{
+    // 1. World-space radius adjusted for object scale
+    float3x3 obj3x3 = (float3x3)unity_ObjectToWorld;
+    float3 scaled = mul(obj3x3, float3(radius * 0.57735, radius * 0.57735, radius * 0.57735));
+    radius = length(scaled);
+
+    // 2. Convert to screen-space (pixel) radius
+    float screen_radius = radius * -(UNITY_MATRIX_P[1][1]) * 0.5 * _ScreenParams.y;
+    
+    // 3. Apply perspective division! This is the critical step.
+    return screen_radius;
+}
 
 Varyings vert(Attributes IN)
 {
     unity_ObjectToWorld = _ObjectToWorld;
     uint vertexId = IN.vertexId;
     
-    int stroke_point_id = IN.vertexId >> GP_VERTEX_ID_SHIFT;
+    int stroke_point_id = (vertexId & ~GP_IS_STROKE_VERTEX_BIT) >> GP_VERTEX_ID_SHIFT;
+
+    GreasePencilStrokeVert p0 = _Pos[stroke_point_id - 1];
+    GreasePencilStrokeVert p1 = _Pos[stroke_point_id + 0];
+    GreasePencilStrokeVert p2 = _Pos[stroke_point_id + 1];
+    GreasePencilStrokeVert p3 = _Pos[stroke_point_id + 2];
+    /* Attribute Loading. */
+    float3 pos0 = p0.pos;
+    float3 pos1 = p1.pos;
+    float3 pos2 = p2.pos;
+    float3 pos3 = p3.pos;
+    
+    gpMaterial gp_mat = gp_materials[p1.mat + gp_material_offset];
+    gpMaterialFlag material_flags = gpMaterialFlag(asuint(gp_mat.flag));
+    // int4 ma = _Strokes[stroke_point_id-1];
+    // int4 ma1 = _Strokes[stroke_point_id];
+    // int4 ma2 = _Strokes[stroke_point_id+1];
+    // int4 ma3 = _Strokes[stroke_point_id+2];
+    //
+    // float4 uv1 = _UvOpacity[stroke_point_id];
+    // float4 uv2 = _UvOpacity[stroke_point_id+1];
+    //
+    // float4 col1 = _Vcol[stroke_point_id];
+    // float4 col2 = _Vcol[stroke_point_id+1];
+    // float4 fcol1 = _Fcol[stroke_point_id];
     // int4 ma1 = _Strokes[stroke_point_id];
     // PointData point_data1 = decode_ma(ma1);
     // gpMaterial gp_mat = gp_materials[point_data1.mat + gp_material_offset];
@@ -27,56 +86,141 @@ Varyings vert(Attributes IN)
     // int4 ma2 = _Strokes[stroke_point_id+1];
     // int4 ma3 = _Strokes[stroke_point_id+2];
     
-    float4 out_ndc;
-    // float4 pos = _Pos[stroke_point_id-1];
-    // float4 pos2 = _Pos[stroke_point_id+1];
-    // float4 pos3 = _Pos[stroke_point_id+2];
-    // int x= IN.vertexId % 4;
-    // if (x==0)
-    //     OUT.positionHCS = TransformObjectToHClip(pos);
-    // if (x==1)
-    //     OUT.positionHCS = TransformObjectToHClip(pos1);
-    // if (x==2)
-    //     OUT.positionHCS = TransformObjectToHClip(pos2);
-    // if (x==3)
-    //     OUT.positionHCS = TransformObjectToHClip(pos3);
-    // if (gpencil_is_stroke_vertex(vertexId))
-    // {
-    //     // bool is_dot = flag_test(material_flags, GP_STROKE_ALIGNMENT);
-    //     // bool is_squares = !flag_test(material_flags, GP_STROKE_DOTS);
-    //     // bool is_first = (ma.x == -1);
-    //     // bool is_last = (ma3.x == -1);
-    //     // bool is_single = is_first && (ma2.x == -1);
-    //     // if (is_last)
-    //     // IN.positionOS.y += 1;
-    // }
-    // IN.positionOS += pos1;
-    // OUT.positionHCS = TransformObjectToHClip(IN.positionOS);
-
-    // float3 outp = float3(stroke_point_id,0,0);
-    float3 pos1 = _Pos[stroke_point_id].pos;
     float3 outp = pos1;
-    if (vertexId%4==0)
+    if (g_pencil_is_stroke_vertex(vertexId))
     {
-        outp.y+=1;
-        outp.z+=1;
+        bool is_dot = flag_test(material_flags, GP_STROKE_ALIGNMENT);
+        bool is_squares = !flag_test(material_flags, GP_STROKE_DOTS);
+
+        bool is_first = (p0.mat == -1);
+        bool is_last = (p3.mat == -1);
+        bool is_single = is_first && (p2.mat == -1);
+
+        /* Join the first and last point if the curve is cyclical. */
+        if (is_cyclic(p1) && !is_single) {
+            if (is_first) {
+                /* The first point will have the index of the last point. */
+                int last_stroke_id = p0.stroke_id;
+                p0 = _Pos[last_stroke_id-2];
+            }
+
+            if (is_last) {
+                int first_stroke_id = p1.stroke_id;
+                p3 = _Pos[first_stroke_id+2];
+            }
+        }
+
+        /* Special Case. Stroke with single vert are rendered as dots. Do not discard them. */
+        if (!is_dot && is_single) {
+            is_dot = true;
+            is_squares = false;
+        }
+
+        /* Endpoints, we discard the vertices. */
+        if (!is_dot && p2.mat == -1) {
+            /* We set the vertex at the camera origin to generate 0 fragments. */
+            OUT.positionHCS = float4(0.0f, 0.0f, -3e36f, 0.0f);
+            return OUT;
+        }
+
+        //quad positioning
+        float x = float(vertexId & 1) * 2.0f - 1.0f; /* [-1..1] */
+        float y = float(vertexId & 2) - 1.0f;        /* [-1..1] */
+        
+        bool is_on_p1 = is_dot || (x == -1.0f);
+
+        float3 wpos_adj = TransformObjectToWorld((is_on_p1) ? pos0.xyz : pos3.xyz);
+        float3 wpos1 = TransformObjectToWorld(pos1.xyz);
+        float3 wpos2 = TransformObjectToWorld(pos2.xyz);
+
+        float3 tangent;
+        if (is_dot) {
+            /* Shade as facing billboards. */
+            tangent = unity_CameraToWorld[0].xyz;
+        }
+        else if (is_on_p1 && p0.mat != -1) {
+            tangent = wpos1 - wpos_adj;
+        }
+        else {
+            tangent = wpos2 - wpos1;
+        }
+        tangent = safe_normalize(tangent);
+        
+        float3 normal = cross(tangent, unity_CameraToWorld[2].xyz);
+        OUT.normal = normalize(cross(normal, tangent));
+
+        // //TODO remove
+        // wpos1.y += y * 0.1;
+        // wpos2.y += y * 0.1;
+        
+        float4 ndc_adj = TransformWorldToHClip(wpos_adj);
+        float4 ndc1 = TransformWorldToHClip(wpos1.xyz);
+        float4 ndc2 = TransformWorldToHClip(wpos2.xyz);
+        
+        OUT.positionHCS = (is_on_p1) ? ndc1 : ndc2;
+        OUT.wPosition = (is_on_p1) ? wpos1 : wpos2;
+        OUT.opacity = abs((is_on_p1) ? p1.opacity : p2.opacity);
+        
+
+        float2 ss_adj = g_pencil_project_to_screenspace(ndc_adj);
+        float2 ss1 = g_pencil_project_to_screenspace(ndc1);
+        float2 ss2 = g_pencil_project_to_screenspace(ndc2);
+        
+        /* Screen-space Lines tangents. */
+        float edge_len;
+        float2 edge_dir = safe_normalize_and_get_length(ss2 - ss1, edge_len);
+        float2 edge_adj_dir = safe_normalize((is_on_p1) ? (ss1 - ss_adj) : (ss_adj - ss2));
+        
+        float radius = abs((is_on_p1) ? p1.radius : p2.radius);
+        radius = g_pencil_stroke_radius_modulate(radius);
+        /* The radius attribute can have negative values. Make sure that it's not negative by clamping
+         * to 0. */
+        float clamped_radius = max(0.0f, radius);
+        
+        OUT.uv = float2(x, y) * 0.5f + 0.5f;
+        OUT.hardness = g_pencil_decode_hardness(is_on_p1 ? p1.packed_asp_hard_rot :
+                                                          p2.packed_asp_hard_rot);
+        
+        //TODO dot
+        bool is_stroke_start = (p0.mat == -1 && x == -1);
+        bool is_stroke_end = (p3.mat == -1 && x == 1);
+        
+        /* Mitter tangent vector. */
+        float2 miter_tan = safe_normalize(edge_adj_dir + edge_dir);
+        float miter_dot = dot(miter_tan, edge_adj_dir);
+        /* Break corners after a certain angle to avoid really thick corners. */
+        const float miter_limit = 0.5f; /* cos(60 degrees) */
+        bool miter_break = (miter_dot < miter_limit);
+        miter_tan = (miter_break || is_stroke_start || is_stroke_end) ? edge_dir :
+                                                                        (miter_tan / miter_dot);
+        /* Rotate 90 degrees counter-clockwise. */
+        float2 miter = float2(-miter_tan.y, miter_tan.x);
+        
+        // out_sspos.xy = ss1;
+        // out_sspos.zw = ss2;
+        OUT.thickness.x = clamped_radius / OUT.positionHCS.w;
+        OUT.thickness.y = radius / OUT.positionHCS.w;
+        OUT.aspect = float2(1, 1);
+        
+        float2 screen_ofs = miter * y;
+        
+        /* Reminder: we packed the cap flag into the sign of strength and thickness sign. */
+        if ((is_stroke_start && p1.opacity > 0.0f) || (is_stroke_end && p1.radius > 0.0f) ||
+            (miter_break && !is_stroke_start && !is_stroke_end))
+        {
+            screen_ofs += edge_dir * x;
+        }
+
+        float2 clip_space_per_pixel = float2(2.0 / _ScreenParams.x, 2.0 / _ScreenParams.y);
+        OUT.positionHCS.xy += screen_ofs * clip_space_per_pixel * clamped_radius;
+        // OUT.positionHCS.xy += screen_ofs * _ScreenParams.zw * 0.1;
+        
+        OUT.uv.x = (is_on_p1) ? p1.u_stroke : p2.u_stroke;
+
+        //end stroke
+        
+        // out_color = (use_curr) ? col1 : col2;
     }
-    else if (vertexId%4==1)
-    {
-        outp.y-=1;
-        outp.z+=1;
-    }
-    else if (vertexId%4==2)
-    {
-        outp.y+=1;
-        outp.z-=1;
-    }
-    else
-    {
-        outp.y-=1;
-        outp.z-=1;
-    }
-    OUT.positionHCS = TransformObjectToHClip(outp.xyz);
     // Manually transform from object space to world space using your matrix
     // float4 worldPos = mul(_ObjectToWorld, float4(outp.xyz, 1.0));
     //

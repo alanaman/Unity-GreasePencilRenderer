@@ -10,7 +10,7 @@ struct GreasePencilStrokeVert
     float3 pos;
     float radius;
     /** Material Index, Stroke Index, Point Index, Packed aspect + hardness + rotation. */
-    int mat, stroke_id, point_id, packed_asp_hard_rot;
+    int mat, stroke_id, signed_point_id, packed_asp_hard_rot;
     /** UV and opacity packed in the same attribute. */
     float2 uv_fill;
     float u_stroke, opacity;

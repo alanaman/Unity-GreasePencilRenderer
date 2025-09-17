@@ -12,20 +12,22 @@ struct Attributes
 struct Varyings
 {
     float4 positionHCS : SV_POSITION;
+    float3 normal : NORMAL;
+    float3 wPosition : WORLD_POSITION;
+    float2 uv : TEXCOORD0;
     // float4 color_mul : TEXCOORD0;
     // float4 color_add : TEXCOORD1;
     // float3 pos : TEXCOORD2;
-    // float2 uv : TEXCOORD3;
     // //flat
-    // float2 aspect : TEXCOORD4;
+    float2 aspect : ASPECT;
     // float4 sspos : TEXCOORD5;
     // uint mat_flag : TEXCOORD6;
     // float depth : TEXCOORD7;
     // //no perspective
-    // float2 thickness : TEXCOORD8;
-    // float hardness : TEXCOORD9;
+    float2 thickness : RADIUS;
+    float hardness : HARDNESS;
     // float index;
-    // float strength;
+    float opacity : OPACITY;
 };
 
 TEXTURE2D(_BaseMap);

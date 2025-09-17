@@ -6,13 +6,15 @@ using UnityEngine;
 
 public class GreasePencilRenderer : MonoBehaviour
 {
+    private const int GP_IS_STROKE_VERTEX_BIT = (1 << 30);
+    
     public GreasePencilSO greasePencil;
     public int frameIdx = 0;
 
     GraphicsBuffer _gPencilIbo;
     GraphicsBuffer _verts;
     GraphicsBuffer _cols;
-    ComputeBuffer materialBuffer;
+    ComputeBuffer _materialBuffer;
     
     public Material material;
     
@@ -35,8 +37,8 @@ public class GreasePencilRenderer : MonoBehaviour
         _verts = null;
         _cols?.Dispose();
         _cols = null;
-        materialBuffer?.Dispose();
-        materialBuffer = null;
+        _materialBuffer?.Dispose();
+        _materialBuffer = null;
     }
 
     void Update()
@@ -47,7 +49,7 @@ public class GreasePencilRenderer : MonoBehaviour
         // Set your custom data buffers
         matProps.SetBuffer("_Pos", _verts);
         matProps.SetBuffer("_Color", _cols);
-        matProps.SetBuffer("gp_materials", materialBuffer);
+        matProps.SetBuffer("gp_materials", _materialBuffer);
 
         // Set the standard object-to-world matrix uniform.
         matProps.SetMatrix("_ObjectToWorld", transform.localToWorldMatrix);
@@ -98,7 +100,6 @@ public class GreasePencilRenderer : MonoBehaviour
         
         // a quad for every strokePoint
         int[] triangleIbo = new int[totalNumPoints*2*3];
-        var triVbo = new Vector3[totalVertexOffset*4];
         int triangleIboIndex = 0;
 
         for (int layerIdx = 0; layerIdx < greasePencil.data.layers.Count; layerIdx++)
@@ -144,7 +145,7 @@ public class GreasePencilRenderer : MonoBehaviour
                     var idx = vertsStartOffset + pointIdx + 1;
                     PopulatePoint(strokePoint, out verts[idx], out cols[idx], idx, isCyclic);
                 }
-
+                verts[vertsStartOffset + pointsCount + 1].mat = -1;
                 void PopulatePoint(PointData strokePoint, out GreasePencilStrokeVert sVert, out GreasePencilColorVert cVert, int idx, bool cyclic)
                 {
                     sVert.pos = strokePoint.Position;
@@ -169,21 +170,21 @@ public class GreasePencilRenderer : MonoBehaviour
                     cVert.fcol = Vector4.one;
 
                     // quad
-                    triangleIbo[triangleIboIndex + 0] = ((vertsStartOffset + idx) << 2) + 0;
-                    triangleIbo[triangleIboIndex + 1] = ((vertsStartOffset + idx) << 2) + 1;
-                    triangleIbo[triangleIboIndex + 2] = ((vertsStartOffset + idx) << 2) + 2;
+                    int vertIdxMarkedStroke = ((vertsStartOffset + idx) << 2) | GP_IS_STROKE_VERTEX_BIT;
+                    triangleIbo[triangleIboIndex + 0] = vertIdxMarkedStroke + 0;
+                    triangleIbo[triangleIboIndex + 1] = vertIdxMarkedStroke + 1;
+                    triangleIbo[triangleIboIndex + 2] = vertIdxMarkedStroke + 2;
                     triangleIboIndex += 3;
-                    triangleIbo[triangleIboIndex + 0] = ((vertsStartOffset + idx) << 2) + 2;
-                    triangleIbo[triangleIboIndex + 1] = ((vertsStartOffset + idx) << 2) + 1;
-                    triangleIbo[triangleIboIndex + 2] = ((vertsStartOffset + idx) << 2) + 3;
+                    triangleIbo[triangleIboIndex + 0] = vertIdxMarkedStroke + 2;
+                    triangleIbo[triangleIboIndex + 1] = vertIdxMarkedStroke + 1;
+                    triangleIbo[triangleIboIndex + 2] = vertIdxMarkedStroke + 3;
                     triangleIboIndex += 3;
-                    triVbo[((vertsStartOffset + idx) << 2) + 0] = strokePoint.Position + Vector3.up;
-                    triVbo[((vertsStartOffset + idx) << 2) + 1] = strokePoint.Position - Vector3.up;
-                    triVbo[((vertsStartOffset + idx) << 2) + 2] = posNext + Vector3.up;
-                    triVbo[((vertsStartOffset + idx) << 2) + 3] = posNext - Vector3.up;
                 }
             }
         }
+        
+        verts[totalVertexOffset + 0].mat = -1;
+        verts[totalVertexOffset + 1].mat = -1;
         
         ReleaseBuffers();
         _gPencilIbo = new GraphicsBuffer(GraphicsBuffer.Target.Structured, triangleIbo.Length, sizeof(int));
@@ -234,8 +235,8 @@ public class GreasePencilRenderer : MonoBehaviour
         }
     
         // Create the ComputeBuffer and upload the data.
-        materialBuffer = new ComputeBuffer(materialDataList.Count, System.Runtime.InteropServices.Marshal.SizeOf(typeof(GpMaterialData)));
-        materialBuffer.SetData(materialDataList);
+        _materialBuffer = new ComputeBuffer(materialDataList.Count, System.Runtime.InteropServices.Marshal.SizeOf(typeof(GpMaterialData)));
+        _materialBuffer.SetData(materialDataList);
     }
     
     private List<int[]> CalculateOffsetsPerLayer(out int totalNumPoints, out int totalVertexOffset)
