@@ -18,6 +18,8 @@ public class GreasePencilRenderer : MonoBehaviour
     
     public Material material;
     
+    [Range(0.0f, 1.0f)] public float opacity = 1.0f;
+    public Color colorTint = new(1, 1, 1, 0);
     void Start()
     {
         CreateMesh();
@@ -53,6 +55,8 @@ public class GreasePencilRenderer : MonoBehaviour
 
         // Set the standard object-to-world matrix uniform.
         matProps.SetMatrix("_ObjectToWorld", transform.localToWorldMatrix);
+        matProps.SetFloat("gp_layer_opacity", opacity);
+        matProps.SetColor("gp_layer_tint", colorTint);
         
         RenderParams rp = new RenderParams(material);
         rp.worldBounds = new Bounds(Vector3.zero, 1000*Vector3.one); // use tighter bounds
@@ -198,6 +202,7 @@ public class GreasePencilRenderer : MonoBehaviour
         CreateMaterialBuffer();
     }
     
+    [StructLayout(LayoutKind.Sequential)]
     struct GpMaterialData
     {
         public Vector4 stroke_color;

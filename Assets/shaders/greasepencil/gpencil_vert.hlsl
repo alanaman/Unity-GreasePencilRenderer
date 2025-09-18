@@ -95,7 +95,7 @@ Varyings vert(Attributes IN)
         else if (flag_test(gp_flag, GP_STROKE_OVERLAP)) {
           /* Use the index of the point as depth.
            * This means the stroke can overlap itself. */
-            OUT.depth = (point_data1.point_id + gp_stroke_index_offset + 2.0f) * 0.0000002f;
+            OUT.depth = (point_data1.point_id + 2.0f) * 0.0000002f;
         }
         else {
             /* Use the index of first point of the stroke as depth.
@@ -103,7 +103,7 @@ Varyings vert(Attributes IN)
             * cannot overlap itself.
             * We offset by one so that the fill can be overlapped by its stroke.
             * The offset is ok since we pad the strokes data because of adjacency infos. */
-            OUT.depth = (point_data1.stroke_id + gp_stroke_index_offset + 2.0f) * 0.0000002f;
+            OUT.depth = (point_data1.stroke_id + 2.0f) * 0.0000002f;
         }
     }
     else {
@@ -150,7 +150,7 @@ Varyings vert(Attributes IN)
         }
         else {
             /* Use the index of first point of the stroke as depth. */
-            OUT.depth = (point_data1.stroke_id + gp_stroke_index_offset + 1.0f) * 0.0000002f;
+            OUT.depth = (point_data1.stroke_id + 1.0f) * 0.0000002f;
         }
     }
     return OUT;        

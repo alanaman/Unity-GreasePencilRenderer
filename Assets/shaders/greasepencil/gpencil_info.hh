@@ -50,8 +50,7 @@ bool gp_stroke_order3d=true;
 int gp_material_offset=0;
 
 //per layer
-float gp_vertex_color_opacity;
-float4 gp_layer_tint;
-float gp_layer_opacity;
-float gp_stroke_index_offset;
+float gp_vertex_color_opacity = 1;
+float4 gp_layer_tint = float4(1, 1, 1, 1);
+float gp_layer_opacity = 1;
 

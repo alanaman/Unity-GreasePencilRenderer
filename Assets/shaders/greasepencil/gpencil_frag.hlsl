@@ -73,20 +73,20 @@ FragOutput frag(Varyings IN)
     //     bool radial = flag_test(IN.mat_flag, GP_FILL_GRADIENT_RADIAL);
     //     float fac = clamp(radial ? length(IN.uv * 2.0f - 1.0f) : IN.uv.x, 0.0f, 1.0f);
     //     uint matid = IN.mat_flag >> GPENCIl_MATID_SHIFT;
-    //     col = mix(gp_materials[matid].fill_color, gp_materials[matid].fill_mix_color, fac);
+    //     col = lerp(gp_materials[matid].fill_color, gp_materials[matid].fill_mix_color, fac);
     // }
     // else /* SOLID */
     // {
-    col = float4(1,1,1,1);
+        col = float4(1,1,1,1);
     // }
     col.rgb *= col.a;
 
     /* Composite all other colors on top of texture color.
      * Everything is pre-multiply by `col.a` to have the stencil effect. */
-    // OUT.color = col * IN.color_mul + col.a * IN.color_add;
-
+	// if(mat
+    OUT.color = col * IN.color_mul + col.a * IN.color_add;
+    //OUT.color.a = 1;
     // OUT.color.rgb *= gpencil_lighting();
-
     OUT.color *= gpencil_stroke_round_cap_mask(IN.sspos.xy,
                                             IN.sspos.zw,
                                             IN.positionHCS.xy,

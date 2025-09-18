@@ -128,7 +128,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 9362044}
-  - component: {fileID: 9362043}
+  - component: {fileID: 9362045}
   m_Layer: 0
   m_Name: gp (1)
   m_TagString: Untagged
@@ -136,21 +136,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &9362043
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 9362042}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: c384956e7bc840369fc55660803dae91, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::GreasePencilRenderer
-  greasePencil: {fileID: 11400000, guid: a018d28c5250b944c9de432335345176, type: 2}
-  frameIdx: 0
-  material: {fileID: 2100000, guid: 5802caa607ab7d342b1d6ae18f8307d3, type: 2}
 --- !u!4 &9362044
 Transform:
   m_ObjectHideFlags: 0
@@ -166,6 +151,23 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &9362045
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9362042}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c384956e7bc840369fc55660803dae91, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GreasePencilRenderer
+  greasePencil: {fileID: 11400000, guid: 4fd5337e70645cb49bd8d1db44e54b2d, type: 2}
+  frameIdx: 0
+  material: {fileID: 2100000, guid: 5802caa607ab7d342b1d6ae18f8307d3, type: 2}
+  opacity: 1
+  colorTint: {r: 1, g: 1, b: 1, a: 0}
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0

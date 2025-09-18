@@ -105,7 +105,7 @@ MonoBehaviour:
             - 0
             - -1.007071
             radius: 0.13776569
-            opacity: 0
+            opacity: 1
             rotation: 0
             vertex_color:
             - 0
@@ -117,7 +117,7 @@ MonoBehaviour:
             - 0
             - -1.007071
             radius: 0.13776569
-            opacity: 0
+            opacity: 1
             rotation: 0
             vertex_color:
             - 0
@@ -129,7 +129,7 @@ MonoBehaviour:
             - 1.7012936
             - -1.007071
             radius: 0.13776569
-            opacity: 0
+            opacity: 1
             rotation: 0
             vertex_color:
             - 0

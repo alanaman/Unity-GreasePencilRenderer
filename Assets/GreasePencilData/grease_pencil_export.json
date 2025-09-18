@@ -115,7 +115,7 @@
                     -1.0070710182189941
                   ],
                   "radius": 0.13776569068431854,
-                  "opacity": 0.0,
+                  "opacity": 1,
                   "rotation": 0.0,
                   "vertex_color": [
                     0.0,
@@ -131,7 +131,7 @@
                     -1.0070710182189941
                   ],
                   "radius": 0.13776569068431854,
-                  "opacity": 0.0,
+                  "opacity": 1,
                   "rotation": 0.0,
                   "vertex_color": [
                     0.0,
@@ -147,7 +147,7 @@
                     -1.0070710182189941
                   ],
                   "radius": 0.13776569068431854,
-                  "opacity": 0.0,
+                  "opacity": 1,
                   "rotation": 0.0,
                   "vertex_color": [
                     0.0,

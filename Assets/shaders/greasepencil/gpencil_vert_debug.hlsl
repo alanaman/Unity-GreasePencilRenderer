@@ -25,19 +25,39 @@ float g_pencil_decode_hardness(int packed_data)
     return float((uint(packed_data) & 0x3FC0000u) >> 18u) * (1.0f / 255.0f);
 }
 
-// The function MUST use the clip-space position to get the w component
 float g_pencil_stroke_radius_modulate(float radius)
 {
-    // 1. World-space radius adjusted for object scale
     float3x3 obj3x3 = (float3x3)unity_ObjectToWorld;
     float3 scaled = mul(obj3x3, float3(radius * 0.57735, radius * 0.57735, radius * 0.57735));
     radius = length(scaled);
 
-    // 2. Convert to screen-space (pixel) radius
-    float screen_radius = radius * -(UNITY_MATRIX_P[1][1]) * 0.5 * _ScreenParams.y;
+    float screen_radius = radius * -(UNITY_MATRIX_P[1][1]) * _ScreenParams.y;
     
-    // 3. Apply perspective division! This is the critical step.
     return screen_radius;
+}
+
+void g_pencil_color_output(out float4 color_mul, out float4 color_add, float4 stroke_col, float4 vert_col, float opacity, float mix_tex)
+{
+    /* Mix stroke with other colors. */
+    float4 mixed_col = stroke_col;
+    mixed_col.rgb = lerp(mixed_col.rgb, vert_col.rgb, vert_col.a * gp_vertex_color_opacity);
+    mixed_col.rgb = lerp(mixed_col.rgb, gp_layer_tint.rgb, gp_layer_tint.a);
+    mixed_col.a *= opacity * gp_layer_opacity;
+    /**
+     * This is what the fragment shader looks like.
+     * out = col * gp_interp.color_mul + col.a * gp_interp.color_add.
+     * gp_interp.color_mul is how much of the texture color to keep.
+     * gp_interp.color_add is how much of the mixed color to add.
+     * Note that we never add alpha. This is to keep the texture act as a stencil.
+     * We do however, modulate the alpha (reduce it).
+     */
+    /* We add the mixed color. This is 100% mix (no texture visible). */
+    color_mul = float4(mixed_col.aaa, mixed_col.a);
+    color_add = float4(mixed_col.rgb * mixed_col.a, 0.0f);
+    /* Then we blend according to the texture mix factor.
+     * Note that we keep the alpha modulation. */
+    color_mul.rgb *= mix_tex;
+    color_add.rgb *= 1.0f - mix_tex;
 }
 
 Varyings vert(Attributes IN)
@@ -56,6 +76,10 @@ Varyings vert(Attributes IN)
     float3 pos1 = p1.pos;
     float3 pos2 = p2.pos;
     float3 pos3 = p3.pos;
+    
+    float4 col1 = _Color[stroke_point_id + 0].vcol;
+    float4 col2 = _Color[stroke_point_id + 1].vcol;
+    float4 fcol1 = _Color[stroke_point_id + 0].fcol;
     
     gpMaterial gp_mat = gp_materials[p1.mat + gp_material_offset];
     gpMaterialFlag material_flags = gpMaterialFlag(asuint(gp_mat.flag));
@@ -210,7 +234,7 @@ Varyings vert(Attributes IN)
             screen_ofs += edge_dir * x;
         }
 
-        float2 clip_space_per_pixel = float2(2.0 / _ScreenParams.x, 2.0 / _ScreenParams.y);
+        float2 clip_space_per_pixel = float2(1.0 / _ScreenParams.x, 1.0 / _ScreenParams.y);
         OUT.positionHCS.xy += screen_ofs * clip_space_per_pixel * clamped_radius;
         // OUT.positionHCS.xy += screen_ofs * _ScreenParams.zw * 0.1;
         
@@ -219,6 +243,7 @@ Varyings vert(Attributes IN)
         //end stroke
 
 
+        g_pencil_color_output(OUT.color_mul, OUT.color_add, gp_mat.stroke_color, is_on_p1? col1 : col2, is_on_p1? p1.opacity : p2.opacity, gp_mat.stroke_texture_mix);
         
         OUT.mat_flag = asuint(material_flags) & ~GP_FILL_FLAGS;
 
@@ -229,7 +254,7 @@ Varyings vert(Attributes IN)
         else if (flag_test(material_flags, GP_STROKE_OVERLAP)) {
             /* Use the index of the point as depth.
              * This means the stroke can overlap itself. */
-            OUT.depth = (abs(p1.signed_point_id) + gp_stroke_index_offset + 2.0f) * 0.0000002f;
+            OUT.depth = (abs(p1.signed_point_id) + 2.0f) * 0.0000002f;
         }
         else {
             /* Use the index of first point of the stroke as depth.
@@ -237,7 +262,7 @@ Varyings vert(Attributes IN)
             * cannot overlap itself.
             * We offset by one so that the fill can be overlapped by its stroke.
             * The offset is ok since we pad the strokes data because of adjacency infos. */
-            OUT.depth = (abs(p1.signed_point_id) + gp_stroke_index_offset + 2.0f) * 0.0000002f;
+            OUT.depth = (abs(p1.signed_point_id) + 2.0f) * 0.0000002f;
         }
         // out_color = (use_curr) ? col1 : col2;
     }
