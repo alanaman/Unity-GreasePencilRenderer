@@ -8,10 +8,17 @@ float gpencil_stroke_round_cap_mask(
 {
     /* We create our own uv space to avoid issues with triangulation and p12ar
      * interpolation artifacts. */
+    //unity has flipped y axis
+    p1.y = _ScreenParams.y - p1.y;
+    p2.y = _ScreenParams.y - p2.y;
+    
     float2 p12 = p2.xy - p1.xy;
-    float2 pos = fragPos - p1.xy;
+    float2 pos = float2(fragPos.x, fragPos.y) - p1.xy;
+    float pos_len = length(pos);
     float p12_len = length(p12);
     float half_p12_len = p12_len * 0.5f;
+    // return pos_len > 1.413 ? 1:0;
+    // return pos_len/1000 > .01 ? 1:0;
     /* Normalize */
     p12 = (p12_len > 0.0f) ? (p12 / p12_len) : float2(1.0f, 0.0f);
     /* Create a uv space that englobe the whole segment into a capsule. */

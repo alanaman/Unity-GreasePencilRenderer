@@ -55,8 +55,8 @@
 FragOutput frag(Varyings IN)
 {
     FragOutput OUT;
-    OUT.color = float4(0,1,0,0);
-    return OUT;
+    OUT.color = float4(1,1,1,1);
+
     float4 col;
     // if (flag_test(IN.mat_flag, GP_STROKE_TEXTURE_USE)) {
     //   bool premul = flag_test(IN.mat_flag, GP_STROKE_TEXTURE_PREMUL);
@@ -83,20 +83,19 @@ FragOutput frag(Varyings IN)
 
     /* Composite all other colors on top of texture color.
      * Everything is pre-multiply by `col.a` to have the stencil effect. */
-    OUT.color = col * IN.color_mul + col.a * IN.color_add;
+    // OUT.color = col * IN.color_mul + col.a * IN.color_add;
 
     // OUT.color.rgb *= gpencil_lighting();
 
     OUT.color *= gpencil_stroke_round_cap_mask(IN.sspos.xy,
-                                                IN.sspos.zw,
-                                                IN.aspect,
-                                                IN.positionHCS.xy,
-                                                IN.thickness.x,
-                                                IN.hardness);
+                                            IN.sspos.zw,
+                                            IN.positionHCS.xy,
+                                            IN.aspect,
+                                            IN.thickness.x,
+                                            IN.hardness);
 
     /* To avoid aliasing artifacts, we reduce the opacity of small strokes. */
     OUT.color *= smoothstep(0.0f, 1.0f, IN.thickness.y);
-
     // /* Holdout materials. */
     // if (flag_test(IN.mat_flag, GP_STROKE_HOLDOUT | GP_FILL_HOLDOUT))
     // {
@@ -111,11 +110,12 @@ FragOutput frag(Varyings IN)
     //      * when using custom color blending. */
     //     // OUT.revealColor = float4(0.0f, 0.0f, 0.0f, OUT.color.a);
     //
-    //     if (OUT.color.a < 0.001f)
-    //     {
-    //         discard;
-    //     }
+    if (OUT.color.a < 0.001f)
+    {
+        discard;
+    }
     // }
+    return OUT;
 
     // float2 fb_size = max(float2(textureSize(gp_scene_depth_tx, 0).xy),
     //                      float2(textureSize(gp_mask_tx, 0).xy));

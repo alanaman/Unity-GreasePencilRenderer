@@ -175,8 +175,10 @@ Varyings vert(Attributes IN)
         float clamped_radius = max(0.0f, radius);
         
         OUT.uv = float2(x, y) * 0.5f + 0.5f;
-        OUT.hardness = g_pencil_decode_hardness(is_on_p1 ? p1.packed_asp_hard_rot :
-                                                          p2.packed_asp_hard_rot);
+
+        //TODO: uncomment
+        // OUT.hardness = g_pencil_decode_hardness(is_on_p1 ? p1.packed_asp_hard_rot : p2.packed_asp_hard_rot);
+        OUT.hardness = 1;
         
         //TODO dot
         bool is_stroke_start = (p0.mat == -1 && x == -1);
@@ -193,8 +195,8 @@ Varyings vert(Attributes IN)
         /* Rotate 90 degrees counter-clockwise. */
         float2 miter = float2(-miter_tan.y, miter_tan.x);
         
-        // out_sspos.xy = ss1;
-        // out_sspos.zw = ss2;
+        OUT.sspos.xy = ss1;
+        OUT.sspos.zw = ss2;
         OUT.thickness.x = clamped_radius / OUT.positionHCS.w;
         OUT.thickness.y = radius / OUT.positionHCS.w;
         OUT.aspect = float2(1, 1);
