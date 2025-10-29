@@ -68,7 +68,7 @@ Shader "Custom/UnlitProcedural"
                 return screen_radius;
             }
             
-            float3 GetCrossing(float3 pos1, float3 pos2, float s1, float s2)
+            bool TryGetZeroPoint(VertexData v1, VertexData v2, out float3 zeroPoint)
             {
                 // We need to find the interpolation factor 't' such that
                 // lerp(vA.scalar, vB.scalar, t) == 0
@@ -80,44 +80,40 @@ Shader "Custom/UnlitProcedural"
                 
                 // Avoid division by zero, though this case (sA == sB)
                 // should be filtered out by the (sA * sB < 0) check.
-                float t = s1 / (s1 - s2);
+                float3 dirToCam1 = normalize(_WorldSpaceCameraPos - v1.position);
+                float3 dirToCam2 = normalize(_WorldSpaceCameraPos - v2.position);
+
+                float dot1 = dot(v1.normal, dirToCam1);
+                float dot2 = dot(v2.normal, dirToCam2);
+                if (dot1 * dot2 > 0)
+                {
+                    zeroPoint = float3(0,0,0);
+                    return false;
+                }
+                float t = dot1 / (dot1 - dot2);
 
                 // Linearly interpolate the clip-space positions
-                return lerp(pos1, pos2, t);
+                zeroPoint = lerp(v1.position, v2.position, t);
+                return true;
             }
             
-            bool TryGetZeroLine(float3 pos1, float3 pos2, float3 pos3, float s1, float s2, float s3, out float3 points[2])
+            bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, out float3 points[2])
             {
-                // --- Graceful Handling ---
-                // Check if all scalars are on the same side of zero.
-                // If so, no line can exist, and we just return early.
-                if ((s1 > 0 && s2 > 0 && s3 > 0) ||
-                    (s1 < 0 && s2 < 0 && s3 < 0))
-                {
-                    return false; // Gracefully outputs no geometry
-                }
                 int points_found = 0;
 
-                // We prioritize checking vertices that are *exactly* zero.
-                // This correctly handles cases where the line passes through a vertex.
-                if (s1 == 0) { points[points_found++] = pos1; }
-                if (s2 == 0 && points_found < 2) { points[points_found++] = pos2; }
-                if (s3 == 0 && points_found < 2) { points[points_found++] = pos3; }
-
-                // Now, check for edge crossings *if we still need points*.
-                // A crossing exists if signs are different (sA * sB < 0).
-                if (points_found < 2 && s1*s2 < 0)
+                if (points_found < 2 && TryGetZeroPoint(v0, v1, points[points_found]))
                 {
-                    points[points_found++] = GetCrossing(pos1, pos2, s1, s2);
+                    points_found++;
                 }
-                if (points_found < 2 && s2 * s3 < 0)
+                if (points_found < 2 && TryGetZeroPoint(v1, v2, points[points_found]))
                 {
-                    points[points_found++] = GetCrossing(pos2, pos3, s2, s3);
+                    points_found++;
                 }
-                if (points_found < 2 && s3 * s1 < 0)
+                if (points_found < 2 && TryGetZeroPoint(v2, v0, points[points_found]))
                 {
-                    points[points_found++] = GetCrossing(pos3, pos1, s3, s1);
+                    points_found++;
                 }
+                
                 if (points_found == 2)
                 {
                     return true;
@@ -137,25 +133,21 @@ Shader "Custom/UnlitProcedural"
                 int vIdx0 = _MeshIndices[faceIdx*3+0];
                 int vIdx1 = _MeshIndices[faceIdx*3+1];
                 int vIdx2 = _MeshIndices[faceIdx*3+2];
+
+                VertexData v0 = _Vertices[vIdx0];
+                VertexData v1 = _Vertices[vIdx1];
+                VertexData v2 = _Vertices[vIdx2];
                 
                 // 2. Use that index to get the actual vertex data (pos/normal)
-                float3 p0 = _Vertices[vIdx0].position;
-                float3 p1 = _Vertices[vIdx1].position;
-                float3 p2 = _Vertices[vIdx2].position;
-                float3 n0 = _Vertices[vIdx0].normal;
-                float3 n1 = _Vertices[vIdx1].normal;
-                float3 n2 = _Vertices[vIdx2].normal;
-
-                float3 dirToCam0 = normalize(_WorldSpaceCameraPos - p0);
-                float3 dirToCam1 = normalize(_WorldSpaceCameraPos - p1);
-                float3 dirToCam2 = normalize(_WorldSpaceCameraPos - p2);
-
-                float dot0 = dot(n0, dirToCam0);
-                float dot1 = dot(n1, dirToCam1);
-                float dot2 = dot(n2, dirToCam2);
+                float3 p0 = v0.position;
+                float3 p1 = v1.position;
+                float3 p2 = v2.position;
+                float3 n0 = v0.normal;
+                float3 n1 = v1.normal;
+                float3 n2 = v2.normal;
 
                 float3 zeroLine[2];
-                if (!TryGetZeroLine(p0, p1, p2, dot0, dot1, dot2, zeroLine))
+                if (!TryGetZeroLine(v0, v1, v2, zeroLine))
                 {
                     //discard
                     o.vertex = float4(0.0f, 0.0f, -3e36f, 0.0f);
