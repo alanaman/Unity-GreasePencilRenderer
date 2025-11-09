@@ -1,0 +1,167 @@
+#pragma kernel CSMain
+
+// Define the input vertex structure
+struct VertexData
+{
+    float3 position;
+    float3 normal;
+};
+
+// Define the output structure
+// Each element corresponds to one input triangle
+struct StrokeData
+{
+    float3 pos[2]; // Endpoints of the silhouette edge on this face
+    uint adj[2];   // Adjacent face index for each endpoint's edge
+    uint valid;    // 1 if a valid edge was found, 0 otherwise
+};
+
+// Input Buffers
+StructuredBuffer<VertexData> _Vertices;  // All mesh vertices
+StructuredBuffer<uint> _Indices;         // Triangle indices (3 per triangle)
+StructuredBuffer<uint> _AdjIndices;    // Adjacency info (3 indices per triangle)
+
+// Output Buffer
+RWStructuredBuffer<StrokeData> _outStrokes;
+
+// Uniforms (constants)
+float3 _WorldSpaceCameraPos; // Camera position, set from C#
+uint _NumFaces;              // Total number of faces (triangles)
+
+// New uniforms: object->world transform and inverse-transpose for normals
+float4x4 _ObjectToWorld;
+float4x4 _ObjectToWorldIT; // inverse-transpose for normal transform
+
+// Helper function to find the zero-crossing point on an edge
+// This is identical to your provided logic.
+bool TryGetZeroPoint(VertexData v1, VertexData v2, out float3 zeroPoint)
+{
+    // We need to find the interpolation factor 't' such that
+    // lerp(vA.scalar, vB.scalar, t) == 0
+    //
+    // sA * (1-t) + sB * t = 0
+    // sA - sA*t + sB*t = 0
+    // sA = t * (sA - sB)
+    // t = sA / (sA - sB)
+    
+    float3 dirToCam1 = normalize(_WorldSpaceCameraPos - v1.position);
+    float3 dirToCam2 = normalize(_WorldSpaceCameraPos - v2.position);
+
+    float dot1 = dot(v1.normal, dirToCam1);
+    float dot2 = dot(v2.normal, dirToCam2);
+    
+    // If dots have the same sign, no silhouette edge crosses this segment
+    if (dot1 * dot2 > 0.0f)
+    {
+        zeroPoint = float3(0, 0, 0);
+        return false;
+    }
+    
+    // Avoid division by zero, though this case (dot1 == dot2)
+    // should be filtered out by the (dot1 * dot2 > 0) check.
+    float denom = dot1 - dot2;
+    if (abs(denom) < 0.00001f)
+    {
+        zeroPoint = float3(0, 0, 0);
+        return false;
+    }
+
+    float t = dot1 / denom;
+
+    // Linearly interpolate the world-space positions
+    zeroPoint = lerp(v1.position, v2.position, t);
+    return true;
+}
+
+// Adapted version of your TryGetZeroLine function for a compute shader
+// It writes its results directly to the _outStrokes buffer at [faceIdx]
+bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
+{
+    // Initialize this output element as invalid first
+    _outStrokes[faceIdx].valid = 0;
+
+    int points_found = 0;
+    float3 zeroPoint; // Temporary variable to store point
+
+    // Check edge v0-v1
+    if (points_found < 2 && TryGetZeroPoint(v0, v1, zeroPoint))
+    {
+        _outStrokes[faceIdx].pos[points_found] = zeroPoint;
+        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 2]; // Adjacency for edge v0-v1
+        points_found++;
+    }
+    
+    // Check edge v1-v2
+    if (points_found < 2 && TryGetZeroPoint(v1, v2, zeroPoint))
+    {
+        _outStrokes[faceIdx].pos[points_found] = zeroPoint;
+        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 0]; // Adjacency for edge v1-v2
+        points_found++;
+    }
+    
+    // Check edge v2-v0
+    if (points_found < 2 && TryGetZeroPoint(v2, v0, zeroPoint))
+    {
+        _outStrokes[faceIdx].pos[points_found] = zeroPoint;
+        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 1]; // Adjacency for edge v2-v0
+        points_found++;
+    }
+    
+    // If we found exactly two points, a valid silhouette line segment
+    // crosses this triangle. Mark it as valid.
+    if (points_found == 2)
+    {
+        _outStrokes[faceIdx].valid = 1; 
+        return true;
+    }
+
+    return false;
+}
+
+
+// for each input face (triangle), a line is generated if it contains a silhouette edge
+// input is triangle list with adjacency info
+// output is one StrokeData per triangle (valid is set only if a silhoutte line was found)
+[numthreads(64, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint faceIdx = id.x;
+
+    // Bounds check: ensure we don't read past the end of the buffers
+    if (faceIdx >= _NumFaces)
+    {
+        return;
+    }
+
+    // --- 1. Fetch Triangle Indices ---
+    uint i0 = _Indices[faceIdx * 3 + 0];
+    uint i1 = _Indices[faceIdx * 3 + 1];
+    uint i2 = _Indices[faceIdx * 3 + 2];
+
+    // --- 2. Fetch Vertex Data ---
+    // Note: If vertices are shared, this will fetch the same vertex
+    // multiple times across different threads, which is fine.
+    VertexData v0 = _Vertices[i0];
+    VertexData v1 = _Vertices[i1];
+    VertexData v2 = _Vertices[i2];
+
+    // --- Transform to world space using provided object matrices ---
+    VertexData w0;
+    VertexData w1;
+    VertexData w2;
+
+    // transform positions (float4 mul) and normals (inverse-transpose 3x3)
+    w0.position = mul(_ObjectToWorld, float4(v0.position, 1.0)).xyz;
+    w1.position = mul(_ObjectToWorld, float4(v1.position, 1.0)).xyz;
+    w2.position = mul(_ObjectToWorld, float4(v2.position, 1.0)).xyz;
+
+    float3x3 nit = (float3x3)_ObjectToWorldIT;
+    w0.normal = normalize(mul(nit, v0.normal));
+    w1.normal = normalize(mul(nit, v1.normal));
+    w2.normal = normalize(mul(nit, v2.normal));
+
+    // --- 3. Run Silhouette Logic on world-space vertices ---
+    // This function will write the result directly to
+    // _outStrokes[faceIdx]
+    TryGetZeroLine(w0, w1, w2, faceIdx);
+}

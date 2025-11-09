@@ -1,4 +1,4 @@
-Shader "Custom/test"
+Shader "Custom/edgeToStroke"
 {
     Properties
     {
@@ -35,17 +35,17 @@ Shader "Custom/test"
                 float3 normal;
             };
             
-            struct StrokeData
-            {
-                float3 pos[2];
-                int adj[2];
-            };
-
             // Declare the GraphicsBuffers that we will set from the C# script
             StructuredBuffer<int> _MeshIndices;
             StructuredBuffer<int> _AdjIndices;
-            
-            StructuredBuffer<VertexData> _Vertices;
+
+            struct StrokeData
+            {
+                float3 pos[2]; // Endpoints of the silhouette edge on this face
+                uint adj[2];   // Adjacent face index for each endpoint's edge
+                uint valid;    // 1 if a valid edge was found, 0 otherwise
+            };
+            StructuredBuffer<StrokeData> _inEdges;
 
             struct v2f
             {
@@ -137,31 +137,19 @@ Shader "Custom/test"
 
                 // 1. Use the vertexID to find the correct index from the index buffer
                 uint faceIdx = vertexID / 6;
-                
-                int vIdx0 = _MeshIndices[faceIdx*3+0];
-                int vIdx1 = _MeshIndices[faceIdx*3+1];
-                int vIdx2 = _MeshIndices[faceIdx*3+2];
 
-                VertexData v0 = _Vertices[vIdx0];
-                VertexData v1 = _Vertices[vIdx1];
-                VertexData v2 = _Vertices[vIdx2];
                 
-                // 2. Use that index to get the actual vertex data (pos/normal)
-                float3 p0 = v0.position;
-                float3 p1 = v1.position;
-                float3 p2 = v2.position;
-                float3 n0 = v0.normal;
-                float3 n1 = v1.normal;
-                float3 n2 = v2.normal;
-
-                float3 zeroLine[2];
-                if (!TryGetZeroLine(v0, v1, v2, zeroLine, faceIdx))
+                float3 p1 = _inEdges[faceIdx].pos[0];
+                float3 p2 = _inEdges[faceIdx].pos[1];
+                
+                if (_inEdges[faceIdx].valid == 0 || length(p1-p2)<0.001)
                 {
                     //discard
                     o.vertex = float4(0.0f, 0.0f, -3e36f, 0.0f);
                     o.normalWS = float3(0,0,0);
                     return o;
                 }
+                
                 bool isSecond = (vertexID%6 > 2);
                 int vI = vertexID%6;
 
@@ -179,31 +167,75 @@ Shader "Custom/test"
                     y = -(float(vI+1 & 2) - 1.0f);        /* [-1..1] */
                 }
 
-                bool is_on_zp1 = (x == -1.0f);
+                bool is_on_p1 = (x == -1.0f);
+
+                int adj;
+                if (is_on_p1)
+                {
+                    adj = _inEdges[faceIdx].adj[0];
+                }
+                else
+                {
+                    adj = _inEdges[faceIdx].adj[1];
+                }
                 
-                float3 wpos1 = TransformObjectToWorld(zeroLine[0]);
-                float3 wpos2 = TransformObjectToWorld(zeroLine[1]);
-                // float4 ndc_adj = TransformWorldToHClip(wpos_adj);
+                float3 pos_adj = _inEdges[adj].pos[0];
+                if (length(pos_adj-p1) < 0.001)
+                {
+                    pos_adj = _inEdges[adj].pos[1];
+                }
+
+                float3 wpos_adj = TransformObjectToWorld(pos_adj);
+                float3 wpos1 = TransformObjectToWorld(p1);
+                float3 wpos2 = TransformObjectToWorld(p2);
+                
+                float4 ndc_adj = TransformWorldToHClip(wpos_adj);
                 float4 ndc1 = TransformWorldToHClip(wpos1.xyz);
                 float4 ndc2 = TransformWorldToHClip(wpos2.xyz);
 
-                o.vertex = (is_on_zp1) ? ndc1 : ndc2;
+                o.vertex = (is_on_p1) ? ndc1 : ndc2;
 
+                float2 ss_adj = project_to_screenspace(ndc_adj);
                 float2 ss1 = project_to_screenspace(ndc1);
                 float2 ss2 = project_to_screenspace(ndc2);
 
                 float edge_len;
                 float2 edge_dir = safe_normalize_and_get_length(ss2 - ss1, edge_len);
+                float2 edge_adj_dir = safe_normalize((is_on_p1) ? (ss1 - ss_adj) : (ss_adj - ss2));
 
                 float radius = 0.1;
                 radius = stroke_radius_modulate(radius);
                 float clamped_radius = max(0.0f, radius);
-                
+
+                // OUT.uv = float2(x, y) * 0.5f + 0.5f;
+
+                //TODO dot
+                // bool is_stroke_start = (p0.mat == -1 && x == -1);
+                // bool is_stroke_end = (p3.mat == -1 && x == 1);
+
+                bool is_stroke_start = (x == -1);
+                bool is_stroke_end = (x == 1);
+
                 /* Mitter tangent vector. */
-                float2 miter_tan = edge_dir;
+                float2 miter_tan = safe_normalize(edge_adj_dir + edge_dir);
+                float miter_dot = dot(miter_tan, edge_adj_dir);
+                /* Break corners after a certain angle to avoid really thick corners. */
+                const float miter_limit = 0.5f; /* cos(60 degrees) */
+                bool miter_break = (miter_dot < miter_limit);
+                // miter_tan = (miter_break || is_stroke_start || is_stroke_end) ? edge_dir : (miter_tan / miter_dot);
+                miter_tan = (miter_tan / miter_dot);
                 /* Rotate 90 degrees counter-clockwise. */
                 float2 miter = float2(-miter_tan.y, miter_tan.x);
+
                 float2 screen_ofs = miter * y;
+
+                // /* Reminder: we packed the cap flag into the sign of strength and thickness sign. */
+                // if ((is_stroke_start && p1.opacity > 0.0f) || (is_stroke_end && p1.radius > 0.0f) ||
+                //     (miter_break && !is_stroke_start && !is_stroke_end))
+                // {
+                //     screen_ofs += edge_dir * x;
+                // }
+
                 
                 float2 clip_space_per_pixel = float2(1.0 / _ScreenParams.x, 1.0 / _ScreenParams.y);
                 o.vertex.xy += screen_ofs * clip_space_per_pixel * clamped_radius;
@@ -246,7 +278,6 @@ Shader "Custom/test"
             half4 frag (v2f i) : SV_Target
             {
                 // Normalize the incoming normal vector
-                float3 normal = normalize(i.normalWS);
                 half4 color = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, float2(0,0)) * _BaseColor;
                 return color;
                 // // Get the main light direction from Unity's built-in variables

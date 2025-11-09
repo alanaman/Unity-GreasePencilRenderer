@@ -17,6 +17,7 @@ public class SilhouetteRenderer : MonoBehaviour
     GraphicsBuffer _meshIndices;
     GraphicsBuffer _adjTriIndices;
     GraphicsBuffer _verts;
+    // GraphicsBuffer _strokesData;
     
     public Material material;
     
@@ -40,6 +41,8 @@ public class SilhouetteRenderer : MonoBehaviour
         // Set your custom data buffers
         matProps.SetBuffer("_Vertices", _verts);
         matProps.SetBuffer("_MeshIndices", _meshIndices);
+        // matProps.SetBuffer("_AdjIndices", _adjTriIndices);
+        // matProps.SetBuffer("_outStrokes", _strokesData);
         // matProps.SetBuffer("_Color", _cols);
         // matProps.SetBuffer("gp_materials", _materialBuffer);
 
