@@ -44,6 +44,7 @@ Shader "Custom/edgeToStroke"
                 float3 pos[2]; // Endpoints of the silhouette edge on this face
                 uint adj[2];   // Adjacent face index for each endpoint's edge
                 uint valid;    // 1 if a valid edge was found, 0 otherwise
+                float3 faceNormal; // Added: world-space face normal
             };
             StructuredBuffer<StrokeData> _inEdges;
 
@@ -141,6 +142,7 @@ Shader "Custom/edgeToStroke"
                 
                 float3 p1 = _inEdges[faceIdx].pos[0];
                 float3 p2 = _inEdges[faceIdx].pos[1];
+                float3 faceNormal = _inEdges[faceIdx].faceNormal; // fetch face normal if needed
                 
                 if (_inEdges[faceIdx].valid == 0 || length(p1-p2)<0.001)
                 {
@@ -180,9 +182,19 @@ Shader "Custom/edgeToStroke"
                 }
                 
                 float3 pos_adj = _inEdges[adj].pos[0];
-                if (length(pos_adj-p1) < 0.001)
+                if (is_on_p1)
                 {
-                    pos_adj = _inEdges[adj].pos[1];
+                    if (length(pos_adj-p1) < 0.001)
+                    {
+                        pos_adj = _inEdges[adj].pos[1];
+                    }
+                }
+                else
+                {
+                    if (length(pos_adj-p2) < 0.001)
+                    {
+                        pos_adj = _inEdges[adj].pos[1];
+                    }
                 }
 
                 float3 wpos_adj = TransformObjectToWorld(pos_adj);
@@ -203,7 +215,7 @@ Shader "Custom/edgeToStroke"
                 float2 edge_dir = safe_normalize_and_get_length(ss2 - ss1, edge_len);
                 float2 edge_adj_dir = safe_normalize((is_on_p1) ? (ss1 - ss_adj) : (ss_adj - ss2));
 
-                float radius = 0.1;
+                float radius = 0.05;
                 radius = stroke_radius_modulate(radius);
                 float clamped_radius = max(0.0f, radius);
 
@@ -213,8 +225,7 @@ Shader "Custom/edgeToStroke"
                 // bool is_stroke_start = (p0.mat == -1 && x == -1);
                 // bool is_stroke_end = (p3.mat == -1 && x == 1);
 
-                bool is_stroke_start = (x == -1);
-                bool is_stroke_end = (x == 1);
+                bool is_stroke_endpoint = (adj == uint(-1));
 
                 /* Mitter tangent vector. */
                 float2 miter_tan = safe_normalize(edge_adj_dir + edge_dir);
@@ -222,12 +233,19 @@ Shader "Custom/edgeToStroke"
                 /* Break corners after a certain angle to avoid really thick corners. */
                 const float miter_limit = 0.5f; /* cos(60 degrees) */
                 bool miter_break = (miter_dot < miter_limit);
-                // miter_tan = (miter_break || is_stroke_start || is_stroke_end) ? edge_dir : (miter_tan / miter_dot);
-                miter_tan = (miter_tan / miter_dot);
+                miter_tan = (miter_break || is_stroke_endpoint) ? edge_dir : (miter_tan / miter_dot);
+
                 /* Rotate 90 degrees counter-clockwise. */
                 float2 miter = float2(-miter_tan.y, miter_tan.x);
-
-                float2 screen_ofs = miter * y;
+                
+                float3 ss_faceNormal = TransformWorldToHClipDir(faceNormal);
+                
+                if (dot(ss_faceNormal.xy, miter) < 0.0f)
+                {
+                    miter = -miter;
+                }
+                
+                float2 screen_ofs = miter * (y+1);
 
                 // /* Reminder: we packed the cap flag into the sign of strength and thickness sign. */
                 // if ((is_stroke_start && p1.opacity > 0.0f) || (is_stroke_end && p1.radius > 0.0f) ||
@@ -261,7 +279,7 @@ Shader "Custom/edgeToStroke"
                 //     o.vertex = TransformObjectToHClip(p2);
                 //     o.normalWS = TransformObjectToWorldDir(n2);
                 // }
-                
+
                 // else // (vI==3)
                 // {
                 //     o.vertex = TransformObjectToHClip(p2);
@@ -269,7 +287,7 @@ Shader "Custom/edgeToStroke"
                 // }
                 //get normals
                 //find zero points
-                
+
                 return o;
             }
 

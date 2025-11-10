@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 using System.Runtime.InteropServices;
 using UnityEditor;
@@ -21,6 +23,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
     GraphicsBuffer _indices;
     
     public Material material;
+
+    public int displayInt=0;
     
     // --- Struct Definitions (must match HLSL) ---
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -38,6 +42,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         public uint adj1;    // adj[0]
         public uint adj2;    // adj[1]
         public uint valid;
+        public Vector3 faceNormal; // Added: world-space face normal
         
         // Helper to match HLSL float3[2] and uint[2] layout
         // Compute stride explicitly via Marshal.SizeOf to avoid mismatch/padding
@@ -100,15 +105,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         // Unity's Mesh class does not provide this by default.
         // This is a placeholder and WILL NOT WORK without a real
         // adjacency calculation algorithm.
-        uint[] adjData = new uint[indices.Length]; 
-        // Populate adjData with your adjacency logic...
-        // For example: adjData[faceIdx * 3 + 0] = adjacent face to edge v1-v2
-        //              adjData[faceIdx * 3 + 1] = adjacent face to edge v2-v0
-        //              adjData[faceIdx * 3 + 2] = adjacent face to edge v0-v1
-        // (Following the access pattern in your shader snippet)
-        
-        // Placeholder: setting all to 0 (invalid)
-        for(int i=0; i<adjData.Length; i++) adjData[i] = 0; 
+        uint[] adjData = CalculateAdjacency(indices);
         
         _adjIndicesBuffer = new ComputeBuffer(adjData.Length, sizeof(uint));
         _adjIndicesBuffer.SetData(adjData);
@@ -180,16 +177,63 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         StrokeData[] debugStrokes = new StrokeData[_faceCount];
         _strokesBuffer.GetData(debugStrokes);
 
+        const float EPS = 1e-6f;
+        uint INVALID = uint.MaxValue;
+        
         for(int i=0; i < debugStrokes.Length; i++)
         {
+            if (i != displayInt)
+            {
+                continue;
+            }
+            var adj1 = debugStrokes[i].adj1;
+            var adj2 = debugStrokes[i].adj2;
+
+            var pos1 = debugStrokes[i].pos1;
+            var pos2 = debugStrokes[i].pos2; 
+            
+            // Defaults if no neighbor found
+            Vector3 pos0 = pos1;
+            Vector3 pos3 = pos2;
+        
+            // Find pos0 from adjacent face adj1:
+            // If adj1 is valid, pick the adjacent face vertex that is NOT one of the current edge endpoints.
+            if (adj1 != INVALID && adj1 < debugStrokes.Length)
+            {
+                var n = debugStrokes[(int)adj1];
+                // neighbor has pos1/pos2 for the shared edge; choose the neighbor's endpoint that is NOT equal to pos1/pos2.
+                if (Vector3.Distance(n.pos1, pos1) < EPS || Vector3.Distance(n.pos1, pos2) < EPS)
+                {
+                    pos0 = n.pos2;
+                }
+                else
+                {
+                    pos0 = n.pos1;
+                }
+            }
+        
+            // Find pos3 from adjacent face adj2:
+            if (adj2 != INVALID && adj2 < debugStrokes.Length)
+            {
+                var n = debugStrokes[(int)adj2];
+                if (Vector3.Distance(n.pos1, pos1) < EPS || Vector3.Distance(n.pos1, pos2) < EPS)
+                {
+                    pos3 = n.pos2;
+                }
+                else
+                {
+                    pos3 = n.pos1;
+                }
+            }
+            
             if(debugStrokes[i].valid == 1)
             {
-                // Draw the line in the editor
-                Debug.DrawLine(
-                    debugStrokes[i].pos1, 
-                    debugStrokes[i].pos2, 
-                    Color.red
-                );
+                // Draw the line in the editor (original edge)
+                Debug.DrawLine(pos1, pos2, Color.red);
+        
+                // Optional: draw computed adjacent endpoints for visualization
+                Debug.DrawLine(pos0, pos1, Color.green);
+                Debug.DrawLine(pos2, pos3, Color.green);
             }
         }
         
@@ -202,7 +246,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         RenderParams rp = new RenderParams(material);
         rp.worldBounds = new Bounds(Vector3.zero, 1000*Vector3.one); // use tighter bounds
         rp.matProps = matProps;
-        // Graphics.RenderPrimitivesIndexed(rp, MeshTopology.Triangles, _indices, _indices.count);
+        Graphics.RenderPrimitivesIndexed(rp, MeshTopology.Triangles, _indices, _indices.count);
     }
 
     void OnDestroy()
@@ -214,4 +258,80 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         _strokesBuffer?.Release();
         _indices?.Dispose();
     }
+    
+    private static uint[] CalculateAdjacency(int[] triangles)
+    {
+        if (triangles == null) throw new ArgumentNullException(nameof(triangles));
+        if (triangles.Length % 3 != 0) throw new ArgumentException("Triangle array length must be a multiple of 3.", nameof(triangles));
+    
+        int faceCount = triangles.Length / 3;
+        uint[] adj = new uint[triangles.Length];
+        const uint INVALID = uint.MaxValue;
+    
+        // initialize all to INVALID
+        for (int i = 0; i < adj.Length; i++) adj[i] = INVALID;
+    
+        // Map an undirected edge key -> list of face indices that contain that edge
+        var edgeToFaces = new Dictionary<long, List<int>>(triangles.Length);
+    
+        for (int f = 0; f < faceCount; f++)
+        {
+            int baseIdx = f * 3;
+            int v0 = triangles[baseIdx + 0];
+            int v1 = triangles[baseIdx + 1];
+            int v2 = triangles[baseIdx + 2];
+    
+            // three edges: (v0,v1), (v1,v2), (v2,v0)
+            long[] keys = new long[3];
+            keys[0] = ((long)Math.Min(v0, v1) << 32) | (uint)Math.Max(v0, v1);
+            keys[1] = ((long)Math.Min(v1, v2) << 32) | (uint)Math.Max(v1, v2);
+            keys[2] = ((long)Math.Min(v2, v0) << 32) | (uint)Math.Max(v2, v0);
+    
+            for (int e = 0; e < 3; e++)
+            {
+                if (!edgeToFaces.TryGetValue(keys[e], out var list))
+                {
+                    list = new List<int>(2);
+                    edgeToFaces[keys[e]] = list;
+                }
+                list.Add(f);
+            }
+        }
+    
+        // Fill adjacency: for each face edge, pick the other face that shares the edge (if any)
+        for (int f = 0; f < faceCount; f++)
+        {
+            int baseIdx = f * 3;
+            int v0 = triangles[baseIdx + 0];
+            int v1 = triangles[baseIdx + 1];
+            int v2 = triangles[baseIdx + 2];
+    
+            long[] keys = new long[3];
+            keys[0] = ((long)Math.Min(v0, v1) << 32) | (uint)Math.Max(v0, v1);
+            keys[1] = ((long)Math.Min(v1, v2) << 32) | (uint)Math.Max(v1, v2);
+            keys[2] = ((long)Math.Min(v2, v0) << 32) | (uint)Math.Max(v2, v0);
+    
+            for (int e = 0; e < 3; e++)
+            {
+                var faces = edgeToFaces[keys[e]];
+                uint neighbor = INVALID;
+    
+                // find a face in the list that is not the current face
+                for (int k = 0; k < faces.Count; k++)
+                {
+                    int other = faces[k];
+                    if (other != f)
+                    {
+                        neighbor = (uint)other;
+                        break; // for non-manifold edges with >2 faces, pick the first other face
+                    }
+                }
+    
+                adj[baseIdx + e] = neighbor;
+            }
+        }
+    
+        return adj;
+    }
+    
 }

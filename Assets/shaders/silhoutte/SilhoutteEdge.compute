@@ -14,6 +14,7 @@ struct StrokeData
     float3 pos[2]; // Endpoints of the silhouette edge on this face
     uint adj[2];   // Adjacent face index for each endpoint's edge
     uint valid;    // 1 if a valid edge was found, 0 otherwise
+    float3 faceNormal; // Added: face normal in world space
 };
 
 // Input Buffers
@@ -87,7 +88,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (points_found < 2 && TryGetZeroPoint(v0, v1, zeroPoint))
     {
         _outStrokes[faceIdx].pos[points_found] = zeroPoint;
-        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 2]; // Adjacency for edge v0-v1
+        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3]; // Adjacency for edge v0-v1
         points_found++;
     }
     
@@ -95,7 +96,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (points_found < 2 && TryGetZeroPoint(v1, v2, zeroPoint))
     {
         _outStrokes[faceIdx].pos[points_found] = zeroPoint;
-        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 0]; // Adjacency for edge v1-v2
+        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 1]; // Adjacency for edge v1-v2
         points_found++;
     }
     
@@ -103,7 +104,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (points_found < 2 && TryGetZeroPoint(v2, v0, zeroPoint))
     {
         _outStrokes[faceIdx].pos[points_found] = zeroPoint;
-        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 1]; // Adjacency for edge v2-v0
+        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 2]; // Adjacency for edge v2-v0
         points_found++;
     }
     
@@ -164,4 +165,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // This function will write the result directly to
     // _outStrokes[faceIdx]
     TryGetZeroLine(w0, w1, w2, faceIdx);
+
+    // --- 4. Compute and store face normal (world space) ---
+    float3 fn = normalize(cross(w1.position - w0.position, w2.position - w0.position));
+    _outStrokes[faceIdx].faceNormal = fn;
 }
