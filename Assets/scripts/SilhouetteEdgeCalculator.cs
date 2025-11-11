@@ -43,6 +43,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         public uint adj2;    // adj[1]
         public uint valid;
         public Vector3 faceNormal; // Added: world-space face normal
+        public uint minLeftPoint;
+        public uint minRightPoint;
         
         // Helper to match HLSL float3[2] and uint[2] layout
         // Compute stride explicitly via Marshal.SizeOf to avoid mismatch/padding
@@ -51,6 +53,23 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
 
     private int _kernelHandle;
     private int _faceCount;
+
+    // New: compute shader for head/tail finding
+    public ComputeShader findHeadTailShader;
+
+    // Buffers used by FindHeadTail pass
+    private ComputeBuffer _labelsBuffer; // uint per stroke
+    private ComputeBuffer _compMinXBuffer; // uint per stroke
+    private ComputeBuffer _compMinYBuffer; // uint per stroke
+    private ComputeBuffer _compMinZBuffer; // uint per stroke
+
+    private int _initPjKernel;
+    private int _findMinPjKernel;
+    private int _findBuildPointersKernel;
+    private int _findMinXKernel;
+    private int _findMinYKernel;
+    private int _findMinZKernel;
+    private int _findAssignKernel;
 
     void Start()
     {
@@ -70,6 +89,16 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
 
         // Get kernel handle
         _kernelHandle = silhouetteShader.FindKernel("CSMain");
+        if (findHeadTailShader != null)
+        {
+            _initPjKernel = findHeadTailShader.FindKernel("InitPJ");
+            _findMinPjKernel = findHeadTailShader.FindKernel("FindMinPJ");
+            // _findBuildPointersKernel = findHeadTailShader.FindKernel("BuildPointers");
+            // _findMinXKernel = findHeadTailShader.FindKernel("ComputeMinX");
+            // _findMinYKernel = findHeadTailShader.FindKernel("ComputeMinY");
+            // _findMinZKernel = findHeadTailShader.FindKernel("ComputeMinZ");
+            // _findAssignKernel = findHeadTailShader.FindKernel("AssignEndpoints");
+        }
 
         // Initialize buffers
         InitializeBuffers();
@@ -115,6 +144,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         // We need one StrokeData element per *face*
         _strokesBuffer = new ComputeBuffer(_faceCount, StrokeData.SizeOf);
 
+        // buffers for FindHeadTail
+        _labelsBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
+        _compMinXBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
+        _compMinYBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
+        _compMinZBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
+
         // --- 5. Set Buffers on Shader ---
         // (This only needs to be done once if buffers don't change)
         silhouetteShader.SetBuffer(_kernelHandle, "_Vertices", _verticesBuffer);
@@ -122,9 +157,20 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         silhouetteShader.SetBuffer(_kernelHandle, "_AdjIndices", _adjIndicesBuffer);
         silhouetteShader.SetBuffer(_kernelHandle, "_outStrokes", _strokesBuffer);
         silhouetteShader.SetInt("_NumFaces", _faceCount);
-        
-        indices = new int[_faceCount*6]; // 6 indices per triangle (2 triangles per original triangle for thick line)
 
+        if (findHeadTailShader != null)
+        {
+            findHeadTailShader.SetInt("_NumFaces", _faceCount);
+
+            findHeadTailShader.SetBuffer(_initPjKernel, "_strokes", _strokesBuffer);
+            findHeadTailShader.SetBuffer(_initPjKernel, "_next", _labelsBuffer);
+
+            // Set buffers for other kernels as well
+            findHeadTailShader.SetBuffer(_findMinPjKernel, "_next", _labelsBuffer);
+            findHeadTailShader.SetBuffer(_findMinPjKernel, "_strokes", _strokesBuffer);
+        }
+        
+        indices = new int[_faceCount*6];
         for (int i = 0; i < indices.Length; i++)
         {
             indices[i] = i;
@@ -167,18 +213,62 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         {
             silhouetteShader.Dispatch(_kernelHandle, threadGroups, 1, 1);
         }
+        DebugDraw();
 
-        // --- 3. (Optional) Get Data Back ---
-        // You can now use _strokesBuffer on the GPU for rendering (e.g., with DrawProcedural).
-        // Or, you can read it back to the CPU for debugging.
-        // Reading back every frame is slow!
+        DebugStrokes();
+        // --- Run FindHeadTail GPU pass if available ---
+        if (findHeadTailShader != null)
+        {
+            // Init labels
+            findHeadTailShader.Dispatch(_initPjKernel, threadGroups, 1, 1);
+
+            // Pointer jumping rounds: run a few times to converge
+            // Build initial pointers from adjacency matches
+            findHeadTailShader.Dispatch(_findBuildPointersKernel, threadGroups, 1, 1);
+            DebugStrokes();
+            for (int i = 0; i < 8; ++i)
+            {
+                findHeadTailShader.Dispatch(_findMinPjKernel, threadGroups, 1, 1);
+
+                DebugStrokes();
+            }
+        }
+
+
+        var matProps = new MaterialPropertyBlock();
+
+        matProps.SetBuffer("_inEdges", _strokesBuffer);
+        matProps.SetMatrix("_ObjectToWorld", sourceMeshFilter.transform.localToWorldMatrix);
+    
         
-        // Example: Read back for debugging
+        RenderParams rp = new RenderParams(material);
+        rp.worldBounds = new Bounds(Vector3.zero, 1000*Vector3.one); // use tighter bounds
+        rp.matProps = matProps;
+        Graphics.RenderPrimitivesIndexed(rp, MeshTopology.Triangles, _indices, _indices.count);
+    }
+
+    private void DebugStrokes()
+    {
+        StrokeData[] strokes = new StrokeData[_faceCount];
+        _strokesBuffer.GetData(strokes);
+
+        // Example: log the first valid stroke found
+        for (int j = 0; j < strokes.Length; j++)
+        {
+            if (strokes[j].valid == 1)
+            {
+                Debug.Log($"Stroke[{j}] pos1={strokes[j].pos1} pos2={strokes[j].pos2} adj1={strokes[j].adj1} adj2={strokes[j].adj2} min={strokes[j].minLeftPoint},{strokes[j].minRightPoint}");
+            }
+        }
+    }
+
+    private void DebugDraw()
+    {
         StrokeData[] debugStrokes = new StrokeData[_faceCount];
         _strokesBuffer.GetData(debugStrokes);
 
         const float EPS = 1e-6f;
-        uint INVALID = uint.MaxValue;
+        const uint INVALID = uint.MaxValue;
         
         for(int i=0; i < debugStrokes.Length; i++)
         {
@@ -236,17 +326,6 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
                 Debug.DrawLine(pos2, pos3, Color.green);
             }
         }
-        
-        var matProps = new MaterialPropertyBlock();
-
-        matProps.SetBuffer("_inEdges", _strokesBuffer);
-        matProps.SetMatrix("_ObjectToWorld", sourceMeshFilter.transform.localToWorldMatrix);
-    
-        
-        RenderParams rp = new RenderParams(material);
-        rp.worldBounds = new Bounds(Vector3.zero, 1000*Vector3.one); // use tighter bounds
-        rp.matProps = matProps;
-        Graphics.RenderPrimitivesIndexed(rp, MeshTopology.Triangles, _indices, _indices.count);
     }
 
     void OnDestroy()
@@ -256,6 +335,10 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         _indicesBuffer?.Release();
         _adjIndicesBuffer?.Release();
         _strokesBuffer?.Release();
+        _labelsBuffer?.Release();
+        _compMinXBuffer?.Release();
+        _compMinYBuffer?.Release();
+        _compMinZBuffer?.Release();
         _indices?.Dispose();
     }
     

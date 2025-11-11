@@ -45,6 +45,7 @@ Shader "Custom/edgeToStroke"
                 uint adj[2];   // Adjacent face index for each endpoint's edge
                 uint valid;    // 1 if a valid edge was found, 0 otherwise
                 float3 faceNormal; // Added: world-space face normal
+                uint minPoint[2];
             };
             StructuredBuffer<StrokeData> _inEdges;
 
@@ -76,60 +77,7 @@ Shader "Custom/edgeToStroke"
                 
                 return screen_radius;
             }
-            
-            bool TryGetZeroPoint(VertexData v1, VertexData v2, out float3 zeroPoint)
-            {
-                // We need to find the interpolation factor 't' such that
-                // lerp(vA.scalar, vB.scalar, t) == 0
-                //
-                // sA * (1-t) + sB * t = 0
-                // sA - sA*t + sB*t = 0
-                // sA = t * (sA - sB)
-                // t = sA / (sA - sB)
-                
-                // Avoid division by zero, though this case (sA == sB)
-                // should be filtered out by the (sA * sB < 0) check.
-                float3 dirToCam1 = normalize(_WorldSpaceCameraPos - v1.position);
-                float3 dirToCam2 = normalize(_WorldSpaceCameraPos - v2.position);
 
-                float dot1 = dot(v1.normal, dirToCam1);
-                float dot2 = dot(v2.normal, dirToCam2);
-                if (dot1 * dot2 > 0)
-                {
-                    zeroPoint = float3(0,0,0);
-                    return false;
-                }
-                float t = dot1 / (dot1 - dot2);
-
-                // Linearly interpolate the clip-space positions
-                zeroPoint = lerp(v1.position, v2.position, t);
-                return true;
-            }
-            
-            bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, out float3 points[2], uint faceIdx)
-            {
-                int points_found = 0;
-
-                if (points_found < 2 && TryGetZeroPoint(v0, v1, points[points_found]))
-                {
-                    points_found++;
-                }
-                if (points_found < 2 && TryGetZeroPoint(v1, v2, points[points_found]))
-                {
-                    points_found++;
-                }
-                if (points_found < 2 && TryGetZeroPoint(v2, v0, points[points_found]))
-                {
-                    points_found++;
-                }
-                
-                if (points_found == 2)
-                {
-                    return true;
-                }
-                return false;
-            }
-            
             // Vertex Shader
             // We use SV_VertexID to get the index of the vertex being processed
             v2f vert (uint vertexID : SV_VertexID)

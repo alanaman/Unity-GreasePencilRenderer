@@ -15,6 +15,8 @@ struct StrokeData
     uint adj[2];   // Adjacent face index for each endpoint's edge
     uint valid;    // 1 if a valid edge was found, 0 otherwise
     float3 faceNormal; // Added: face normal in world space
+    uint minLeftPoint; // Added: index (0/1) indicating which local endpoint is the 'min' endpoint for this stroke
+    uint minRightPoint; // Added: complementary endpoint index
 };
 
 // Input Buffers
@@ -84,35 +86,88 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     int points_found = 0;
     float3 zeroPoint; // Temporary variable to store point
 
-    // Check edge v0-v1
-    if (points_found < 2 && TryGetZeroPoint(v0, v1, zeroPoint))
+    // Temporaries to keep found points + adjacency + which edge produced them
+    float3 tmpPoints[2];
+    uint  tmpAdj[2];
+    int   tmpEdgeIdx[2];
+
+    // Check edge v0-v1  (edge index 0)
+    if (TryGetZeroPoint(v0, v1, zeroPoint))
     {
-        _outStrokes[faceIdx].pos[points_found] = zeroPoint;
-        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3]; // Adjacency for edge v0-v1
+        tmpPoints[points_found] = zeroPoint;
+        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 0]; // Adjacency for edge v0-v1
+        tmpEdgeIdx[points_found] = 0;
         points_found++;
     }
     
-    // Check edge v1-v2
-    if (points_found < 2 && TryGetZeroPoint(v1, v2, zeroPoint))
+    // Check edge v1-v2  (edge index 1)
+    if (TryGetZeroPoint(v1, v2, zeroPoint))
     {
-        _outStrokes[faceIdx].pos[points_found] = zeroPoint;
-        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 1]; // Adjacency for edge v1-v2
+        tmpPoints[points_found] = zeroPoint;
+        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 1]; // Adjacency for edge v1-v2
+        tmpEdgeIdx[points_found] = 1;
         points_found++;
     }
     
-    // Check edge v2-v0
-    if (points_found < 2 && TryGetZeroPoint(v2, v0, zeroPoint))
+    // Check edge v2-v0  (edge index 2)
+    if (TryGetZeroPoint(v2, v0, zeroPoint))
     {
-        _outStrokes[faceIdx].pos[points_found] = zeroPoint;
-        _outStrokes[faceIdx].adj[points_found] = _AdjIndices[faceIdx * 3 + 2]; // Adjacency for edge v2-v0
+        tmpPoints[points_found] = zeroPoint;
+        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 2]; // Adjacency for edge v2-v0
+        tmpEdgeIdx[points_found] = 2;
         points_found++;
     }
     
     // If we found exactly two points, a valid silhouette line segment
-    // crosses this triangle. Mark it as valid.
+    // crosses this triangle.
     if (points_found == 2)
     {
-        _outStrokes[faceIdx].valid = 1; 
+        bool flip = false;
+
+        if (tmpEdgeIdx[0] == 0 && tmpEdgeIdx[1] == 2)
+        {
+            flip = true;
+        }
+        
+        if (tmpEdgeIdx[0] == 0 && tmpEdgeIdx[1] == 1)
+        {
+            if (dot(v2.normal, normalize(_WorldSpaceCameraPos - v2.position)) > 0.0f)
+            {
+                flip = !flip;
+            }
+        }
+        else if (tmpEdgeIdx[0] == 1 && tmpEdgeIdx[1] == 2)
+        {
+            if (dot(v0.normal, normalize(_WorldSpaceCameraPos - v0.position)) > 0.0f)
+            {
+                flip = !flip;
+            }
+        }
+        else if (tmpEdgeIdx[0] == 0 && tmpEdgeIdx[1] == 2)
+        {
+            if (dot(v1.normal, normalize(_WorldSpaceCameraPos - v1.position)) > 0.0f)
+            {
+                flip = !flip;
+            }
+        }
+        
+        // Ensure winding is consistent with original faces
+        if (flip)
+        {
+            _outStrokes[faceIdx].pos[0] = tmpPoints[1];
+            _outStrokes[faceIdx].adj[0] = tmpAdj[1];
+            _outStrokes[faceIdx].pos[1] = tmpPoints[0];
+            _outStrokes[faceIdx].adj[1] = tmpAdj[0];
+        }
+        else
+        {
+            _outStrokes[faceIdx].pos[0] = tmpPoints[0];
+            _outStrokes[faceIdx].adj[0] = tmpAdj[0];
+            _outStrokes[faceIdx].pos[1] = tmpPoints[1];
+            _outStrokes[faceIdx].adj[1] = tmpAdj[1];
+        }
+
+        _outStrokes[faceIdx].valid = 1;
         return true;
     }
 

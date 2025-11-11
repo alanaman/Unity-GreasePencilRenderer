@@ -231,6 +231,8 @@ MonoBehaviour:
   sourceMeshFilter: {fileID: 966887314}
   viewCamera: {fileID: 0}
   material: {fileID: 2100000, guid: a18e6cfc6ab3b854fa2ca466bcc08f42, type: 2}
+  displayInt: 0
+  findHeadTailShader: {fileID: 7200000, guid: 50c827ade20b47bf8317d367714cd5e6, type: 3}
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0
