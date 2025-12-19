@@ -1,0 +1,59 @@
+#pragma kernel SetStrokeLengthAtTail
+#pragma kernel CalculateArrayOffsets
+#pragma kernel MoveToDenseArray
+
+#include "siloutte_defines.hh"
+
+RWStructuredBuffer<StrokeData> _strokes;
+uint _NumFaces;
+
+RWStructuredBuffer<uint> numStrokesCounter;
+RWStructuredBuffer<uint> numStrokePointsCounter;
+
+
+uint numStrokesCounter_local_dummy; // ...existing code...
+uint numStrokePointsCounter_local_dummy;
+
+
+RWStructuredBuffer<StrokeData> _denseArray;
+
+[numthreads(64,1,1)]
+void SetStrokeLengthAtTail(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = id.x;
+    if (idx >= _NumFaces) return;
+    StrokeData s = _strokes[idx];
+    if (!s.isChild)
+    {
+        _strokes[s.minPoint].totalStrokeLength = s.rank +1;
+    }
+}
+
+[numthreads(64,1,1)]
+void CalculateArrayOffsets(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _NumFaces) return;
+    StrokeData s = _strokes[i];
+    if (s.valid == 0u) return;
+    
+    if (_strokes[i].minPoint == i)
+    {
+        InterlockedAdd(numStrokePointsCounter[0], _strokes[i].totalStrokeLength, _strokes[i].strokePointsOffset);
+        InterlockedAdd(numStrokesCounter[0], 1u, _strokes[i].strokeIdx);
+    }
+}
+
+
+
+[numthreads(64,1,1)]
+void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (_strokes[i].valid == 0u) return;
+    StrokeData s = _strokes[i];
+    StrokeData tail = _strokes[s.minPoint]; 
+    uint offsetInStroke = s.rank;
+    uint globalOffset = tail.strokePointsOffset + offsetInStroke;
+    _denseArray[globalOffset] = s;
+}

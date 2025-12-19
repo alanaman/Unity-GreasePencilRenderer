@@ -1,25 +1,18 @@
 #pragma kernel InitPJ
-#pragma kernel PointerJump
+#pragma kernel ListRankPJ
 #pragma kernel FindMinPJ
-// #pragma kernel AssignEndpoints
+#pragma kernel ResetNextPointer
+#pragma kernel InitDistances
 
-#define INVALID_UINT 0xFFFFFFFFu
-
-struct StrokeData
-{
-    float3 pos[2];
-    uint adj[2];
-    uint valid;
-    float3 faceNormal;
-    uint minPoint[2];
-};
+#include "siloutte_defines.hh"
 
 RWStructuredBuffer<StrokeData> _strokes; // read from silhouette pass (the same structured layout)
-// RWStructuredBuffer<StrokeData> _outStrokes; // we will write minLeftPoint/minRightPoint here
 
-RWStructuredBuffer<uint> _next; // per-stroke connected-component label
 
-uint _NumFaces; // set from C#
+// TODO: use src and dest buffers to avoid race conditions
+RWStructuredBuffer<uint> _nextPointer; // per-stroke successor index (adjacency)
+
+uint _NumFaces;
 
 // Convert float to a lexicographically sortable uint representation (preserves ordering including negatives)
 uint FloatToSortableUint(float f)
@@ -29,23 +22,27 @@ uint FloatToSortableUint(float f)
     return (u & 0x80000000u) ? ~u : (u ^ 0x80000000u);
 }
 
-// Kernel: initialize labels to self for valid strokes, INVALID otherwise
+// --------
+
 [numthreads(64,1,1)]
 void InitPJ(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumFaces) return;
     StrokeData s = _strokes[i];
-    _strokes[i].minPoint[0] = i;
-    _strokes[i].minPoint[1] = i;
-    if (s.valid == 1u)
-    {
-        _next[i] = s.adj[0];
-    }
-    else
-    {
-        _next[i] = INVALID_UINT;
-    }
+    _strokes[i].minPoint = i;
+
+    // Initialize pointer for pointer-jumping passes
+    _nextPointer[i] = (s.valid == 1u) ? s.adj : INVALID_UINT;
+}
+
+[numthreads(64,1,1)]
+void ResetNextPointer(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _NumFaces) return;
+    StrokeData s = _strokes[i];
+    _nextPointer[i] = (s.valid == 1u) ? s.adj : INVALID_UINT;
 }
 
 bool lessThan(float3 a, float3 b)
@@ -55,6 +52,19 @@ bool lessThan(float3 a, float3 b)
     return a.z < b.z;
 }
 
+bool lessThan(StrokeData a, StrokeData b)
+{
+    if (a.adj != b.adj)
+    {
+        if (a.adj == INVALID_UINT)
+            return true;
+        if (b.adj == INVALID_UINT)
+            return false;
+    }
+    return lessThan(a.pos, b.pos);
+}
+
+// Pointer-jumping to propagate the minimum point
 [numthreads(64,1,1)]
 void FindMinPJ(uint3 id : SV_DispatchThreadID)
 {
@@ -63,95 +73,89 @@ void FindMinPJ(uint3 id : SV_DispatchThreadID)
     StrokeData s = _strokes[i];
     if (s.valid == 0u)
     {
-        // already marked invalid in InitLabels
         return;
     }
 
-    if (_next[i] == INVALID_UINT)
+    uint succ = _nextPointer[i];
+    if (succ != INVALID_UINT)
     {
-        // no neighbors, nothing to do
-        return;
+        uint succMin = _strokes[ _strokes[succ].minPoint ].minPoint;
+        if (lessThan(_strokes[succMin], _strokes[s.minPoint]))
+        {
+            _strokes[i].minPoint = succMin;
+        }
+        // jump to grand-successor
+        _nextPointer[i] = _nextPointer[succ];
     }
-
-    uint next = _next[i];
-    if (lessThan(_strokes[next].pos[0], s.pos[0]) || lessThan(_strokes[next].pos[1], s.pos[0]))
-    {
-        _strokes[i].minPoint[0] = _strokes[next].minPoint[0];
-    }
-    _next[i] = _next[_next[i]];
 }
 
-// Kernel: pointer jumping (Wyllie-like) to reduce labels quickly
-// We perform an in-kernel iterative pointer-jumping loop; this converges in O(log N) steps
+
 [numthreads(64,1,1)]
-void PointerJump(uint3 id : SV_DispatchThreadID)
+void InitDistances(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumFaces) return;
-    uint lbl = _next[i];
-    if (lbl == INVALID_UINT) return;
-
-    // iterate a fixed number of pointer-jumping rounds (enough for typical mesh sizes)
-    // 16 iterations support up to 2^16 hops
-    [loop]
-    for (int it = 0; it < 16; ++it)
+    StrokeData s = _strokes[i];
+    if (s.valid == 0u)
     {
-        uint next = _next[lbl];
-        if (next == INVALID_UINT || next == lbl) break;
-        // collapse: take the smaller label to prefer deterministic root
-        uint newlbl = (next < lbl) ? next : lbl;
-        // try to further hop
-        uint next2 = _next[newlbl];
-        if (next2 == INVALID_UINT || next2 == newlbl) { lbl = newlbl; break; }
-        lbl = (next2 < newlbl) ? next2 : newlbl;
+        _strokes[i].distFromTail = 0.0f;
+        _strokes[i].rank = 0u;
+        return;
     }
-    _next[i] = lbl;
+
+    bool isTail = (i == s.minPoint) || s.adj == INVALID_UINT;
+    if (isTail)
+    {
+        _strokes[i].distFromTail = 0.0f;
+        _strokes[i].rank = 0u;
+        return;
+    }
+    else
+    {
+        float d = distance(s.pos, _strokes[s.adj].pos);
+        _strokes[i].distFromTail = d;
+        _strokes[i].rank = 1u;
+        
+        //TODO: move this to somewhere intuitive
+        _strokes[s.adj].isChild = 1;
+    }
+        
 }
 
-// // Kernel: assign minLeftPoint/minRightPoint for each stroke based on per-component minima
-// [numthreads(64,1,1)]
-// void AssignEndpoints(uint3 id : SV_DispatchThreadID)
-// {
-//     uint i = id.x;
-//     if (i >= _NumFaces) return;
-//     StrokeData s = _strokes[i];
-//     uint comp = _next[i];
-//     if (comp == INVALID_UINT || s.valid == 0u)
-//     {
-//         // mark invalid
-//         _outStrokes[i] = s;
-//         _outStrokes[i].minPoint[0] = INVALID_UINT;
-//         _outStrokes[i].minPoint[1] = INVALID_UINT;
-//         return;
-//     }
-//
-//     uint cmx = _compMinX[comp];
-//     uint cmy = _compMinY[comp];
-//     uint cmz = _compMinZ[comp];
-//
-//     // default to endpoint 0 as min
-//     uint minIdx = 0u;
-//     // check endpoint 0
-//     uint ux0 = FloatToSortableUint(s.pos[0].x);
-//     uint uy0 = FloatToSortableUint(s.pos[0].y);
-//     uint uz0 = FloatToSortableUint(s.pos[0].z);
-//     if (ux0 == cmx && uy0 == cmy && uz0 == cmz)
-//     {
-//         minIdx = 0u;
-//     }
-//     else
-//     {
-//         uint ux1 = FloatToSortableUint(s.pos[1].x);
-//         uint uy1 = FloatToSortableUint(s.pos[1].y);
-//         uint uz1 = FloatToSortableUint(s.pos[1].z);
-//         if (ux1 == cmx && uy1 == cmy && uz1 == cmz)
-//             minIdx = 1u;
-//         else
-//             minIdx = 0u; // no exact match (degenerate), fallback
-//     }
-//
-//     s.minLeftPoint = minIdx; // 0 or 1
-//     s.minRightPoint = (minIdx == 0u) ? 1u : 0u;
-//
-//     _outStrokes[i] = s;
-// }
+// Pointer-jumping list ranking: compute distance-to-tail (float) and hop count
+[numthreads(64,1,1)]
+void ListRankPJ(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _NumFaces) return;
+    StrokeData si = _strokes[i];
+    if (si.valid == 0u) return;
+
+    // Stop at tail nodes (as defined by i == minPoint)
+    if (i == si.minPoint)
+    {
+        return;
+    }
+
+    uint succ = _nextPointer[i];
+    if (succ == INVALID_UINT) return;
+
+    StrokeData ss = _strokes[succ];
+    bool succIsTail = (succ == ss.minPoint);
+
+    // accumulate distance and hop count from successor
+    _strokes[i].distFromTail += ss.distFromTail;
+    _strokes[i].rank += ss.rank;
+
+    // If successor is a tail, stop jumping; otherwise jump to grand-successor
+    if (succIsTail)
+    {
+        _nextPointer[i] = INVALID_UINT;
+        // mark as not cyclic if tail does not loop
+        _strokes[i].isCyclic = ss.adj != INVALID_UINT;
+    }
+    else
+    {
+        _nextPointer[i] = _nextPointer[succ];
+    }
+}
