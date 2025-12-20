@@ -1,8 +1,12 @@
 #pragma kernel SetStrokeLengthAtTail
 #pragma kernel CalculateArrayOffsets
 #pragma kernel MoveToDenseArray
+#pragma kernel InvalidateEntries
 
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 #include "siloutte_defines.hh"
+#include "../greasepencil/gpencil_info.hh"
+#include "../greasepencil/gpencil_defines.hh"
 
 RWStructuredBuffer<StrokeData> _strokes;
 uint _NumFaces;
@@ -15,7 +19,7 @@ uint numStrokesCounter_local_dummy; // ...existing code...
 uint numStrokePointsCounter_local_dummy;
 
 
-RWStructuredBuffer<StrokeData> _denseArray;
+RWStructuredBuffer<GreasePencilStrokeVert> _denseArray;
 
 [numthreads(64,1,1)]
 void SetStrokeLengthAtTail(uint3 id : SV_DispatchThreadID)
@@ -37,13 +41,73 @@ void CalculateArrayOffsets(uint3 id : SV_DispatchThreadID)
     StrokeData s = _strokes[i];
     if (s.valid == 0u) return;
     
+    
+    uint strokeBufferLength = _strokes[s.minPoint].totalStrokeLength + s.isCyclic?1:0 + 2;
+    
     if (_strokes[i].minPoint == i)
     {
-        InterlockedAdd(numStrokePointsCounter[0], _strokes[i].totalStrokeLength, _strokes[i].strokePointsOffset);
+        InterlockedAdd(numStrokePointsCounter[0], strokeBufferLength, _strokes[i].strokePointsOffset);
         InterlockedAdd(numStrokesCounter[0], 1u, _strokes[i].strokeIdx);
     }
 }
 
+[numthreads(64,1,1)]
+void InvalidateEntries(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    _denseArray[i].mat = -1;
+}
+    
+
+uint unit_float_to_uchar_clamp(float val)
+{
+    return (uint)round(saturate(val) * 255.0);
+}
+
+uint pack_rotation_aspect_hardness_miter(
+    const float rot,
+    const float asp,
+    const float softness,
+    const float miter_angle)
+{
+    uint packed = 0;
+    /* Aspect uses 9 bits */
+    float asp_normalized = (asp > 1.0f) ? (1.0f / asp) : asp;
+    /* Use the default aspect ratio of 1 when the value is outside of the valid range. */
+    if (asp_normalized <= 0.0f) {
+        asp_normalized = 1.0f;
+    }
+    packed |= uint(unit_float_to_uchar_clamp(asp_normalized));
+    /* Store if inverted in the 9th bit. */
+    if (asp > 1.0f) {
+        packed |= 1 << 8;
+    }
+    /* Rotation uses 9 bits */
+    /* Rotation are in [-90..90] degree range, so we can encode the sign of the angle + the cosine
+     * because the cosine will always be positive. */
+    packed |= unit_float_to_uchar_clamp(cos(rot)) << 9;
+    /* Store sine sign in 9th bit. */
+    if (rot < 0.0f) {
+        packed |= 1 << 17;
+    }
+    /* Hardness uses 8 bits */
+    packed |= unit_float_to_uchar_clamp(1.0f - softness) << 18;
+    
+
+    /* Miter Angle uses the last 6 bits */
+    if (miter_angle <= GP_STROKE_MITER_ANGLE_ROUND) {
+        packed |= GP_CORNER_TYPE_ROUND_BITS << 26;
+    }
+    else if (miter_angle >= GP_STROKE_MITER_ANGLE_BEVEL) {
+        packed |= GP_CORNER_TYPE_BEVEL_BITS << 26;
+    }
+    else {
+        const float miter_norm = (miter_angle / PI);
+        packed |= clamp(int(miter_norm * GP_CORNER_TYPE_MITER_NUMBER), 1, GP_CORNER_TYPE_MITER_NUMBER) << 26;
+    }
+
+    return packed;
+}
 
 
 [numthreads(64,1,1)]
@@ -53,7 +117,23 @@ void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
     if (_strokes[i].valid == 0u) return;
     StrokeData s = _strokes[i];
     StrokeData tail = _strokes[s.minPoint]; 
-    uint offsetInStroke = s.rank;
-    uint globalOffset = tail.strokePointsOffset + offsetInStroke;
-    _denseArray[globalOffset] = s;
+    int offsetInStroke = s.rank;
+    uint globalOffset = tail.strokePointsOffset + offsetInStroke + 1;
+    
+    
+    GreasePencilStrokeVert gpVert;
+    gpVert.pos = s.pos;
+    gpVert.radius = 1.0f;
+    
+    gpVert.mat = 0;
+    gpVert.stroke_id = tail.strokePointsOffset;
+    gpVert.signed_point_id = s.isCyclic? -offsetInStroke: offsetInStroke;
+    gpVert.packed_asp_hard_rot = pack_rotation_aspect_hardness_miter(0, 1.0f, 0.0f, 60.0f);
+    // this is only used for fill, we only create an outline.
+    gpVert.uv_fill = float2(0.0f, 0.0f); 
+    gpVert.u_stroke = s.distFromTail;
+    gpVert.opacity = 1.0f;
+    
+    
+    _denseArray[globalOffset] = gpVert;
 }

@@ -85,6 +85,8 @@ public class GreasePencilRenderer : MonoBehaviour
         // float u_stroke, opacity;
         public float u_stroke;
         public float opacity;
+        
+        public static int SizeOf => Marshal.SizeOf(typeof(GreasePencilStrokeVert));
     };
     
     [StructLayout(LayoutKind.Sequential)]

@@ -41,8 +41,8 @@ Shader "Custom/edgeToStroke"
 
             struct StrokeData
             {
-                float3 pos; // Endpoints of the silhouette edge on this face
-                uint adj;   // Adjacent face index for each endpoint's edge
+                float3 pos[2]; // Endpoints of the silhouette edge on this face
+                uint adj[2];   // Adjacent face index for each endpoint's edge
                 uint valid;    // 1 if a valid edge was found, 0 otherwise
                 float3 faceNormal; // Added: world-space face normal
                 uint minPoint[2];

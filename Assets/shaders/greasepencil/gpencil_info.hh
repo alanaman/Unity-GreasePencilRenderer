@@ -10,6 +10,8 @@ struct GreasePencilStrokeVert
     float3 pos;
     float radius;
     /** Material Index, Stroke Index, Point Index, Packed aspect + hardness + rotation. */
+    // mat = -1 if this vert is padding at the start and end of a stroke
+    // cyclic = signed_point_id<0;
     int mat, stroke_id, signed_point_id, packed_asp_hard_rot;
     /** UV and opacity packed in the same attribute. */
     float2 uv_fill;
@@ -17,8 +19,8 @@ struct GreasePencilStrokeVert
 };
 
 struct GreasePencilColorVert {
-float4 vcol; /* Vertex color */
-float4 fcol; /* Fill color */
+    float4 vcol; /* Vertex color */
+    float4 fcol; /* Fill color */
 };
 
 StructuredBuffer<GreasePencilStrokeVert> _Pos;

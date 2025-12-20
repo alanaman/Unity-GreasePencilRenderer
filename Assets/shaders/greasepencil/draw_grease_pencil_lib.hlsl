@@ -3,6 +3,43 @@
 #include "gpencil_info.hh"
 #include "gpencil_shader_shared.hh"
 
+#define MITER_LIMIT_TYPE_BEVEL -1.0f
+#define MITER_LIMIT_TYPE_ROUND -2.0f
+
+float2 gpencil_decode_aspect(int packed_data)
+{
+    float asp = float(uint(packed_data) & 0x1FFu) * (1.0f / 255.0f);
+    return (asp > 1.0f) ? float2(1.0f, (asp - 1.0f)) : float2(asp, 1.0f);
+}
+
+float gpencil_decode_uvrot(int packed_data)
+{
+    uint udata = uint(packed_data);
+    float uvrot = 1e-8f + float((udata & 0x1FE00u) >> 9u) * (1.0f / 255.0f);
+    return ((udata & 0x20000u) != 0u) ? -uvrot : uvrot;
+}
+
+float gpencil_decode_hardness(int packed_data)
+{
+    return float((uint(packed_data) & 0x3FC0000u) >> 18u) * (1.0f / 255.0f);
+}
+
+
+
+float gpencil_decode_miter_limit(int packed_data)
+{
+    uint miter_data = (uint(packed_data) & 0xFC000000u) >> 26u;
+    if (miter_data == GP_CORNER_TYPE_ROUND_BITS) {
+        return MITER_LIMIT_TYPE_ROUND;
+    }
+    else if (miter_data == GP_CORNER_TYPE_BEVEL_BITS) {
+        return MITER_LIMIT_TYPE_BEVEL;
+    }
+    float miter_angle = float(miter_data) * (PI / GP_CORNER_TYPE_MITER_NUMBER);
+    return cos(miter_angle);
+}
+
+
 float gpencil_stroke_round_cap_mask(
     float2 p1, float2 p2, float2 fragPos, float2 aspect, float thickness, float hardfac)
 {

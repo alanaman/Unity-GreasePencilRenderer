@@ -74,6 +74,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
     
     private int _setStrokeLengthAtTailKernel;
     private int _calcStrokeOffsetsKernel;
+    private int _invalidateEntriesKernel;
     private int _sorterKernel;
 
     // Add two 1-element buffers to be used as UAV atomic counters by the compute shader
@@ -109,6 +110,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         {
             _setStrokeLengthAtTailKernel = sorterShader.FindKernel("SetStrokeLengthAtTail");
             _calcStrokeOffsetsKernel = sorterShader.FindKernel("CalculateArrayOffsets");
+            _invalidateEntriesKernel = sorterShader.FindKernel("InvalidateEntries");
             _sorterKernel = sorterShader.FindKernel("MoveToDenseArray");
         }
 
@@ -152,7 +154,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
 
         // --- 4. Output Stroke Buffer ---
         _strokesBuffer = new ComputeBuffer(_faceCount, StrokeData.SizeOf);
-        _denseStrokesBuffer = new ComputeBuffer(_faceCount, StrokeData.SizeOf);
+        _denseStrokesBuffer = new ComputeBuffer(_faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
 
         // buffers for FindHeadTail
         _nextPointerBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
@@ -203,6 +205,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "_strokes", _strokesBuffer);
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "numStrokesCounter", _numStrokesCounterBuffer);
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "numStrokePointsCounter", _numStrokePointsCounterBuffer);
+            sorterShader.SetBuffer(_invalidateEntriesKernel, "_denseArray", _denseStrokesBuffer);
 
             sorterShader.SetBuffer(_sorterKernel, "_strokes", _strokesBuffer);
             sorterShader.SetBuffer(_sorterKernel, "_denseArray", _denseStrokesBuffer);
@@ -289,8 +292,9 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             sorterShader.Dispatch(_setStrokeLengthAtTailKernel, threadGroups, 1, 1);
             sorterShader.Dispatch(_calcStrokeOffsetsKernel, threadGroups, 1, 1);
             DebugStrokes();
+            sorterShader.Dispatch(_invalidateEntriesKernel, threadGroups, 1, 1);
             sorterShader.Dispatch(_sorterKernel, threadGroups, 1, 1);
-            DebugStrokes();
+            DebugGp();
         }
 
         var matProps = new MaterialPropertyBlock();
@@ -321,6 +325,17 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             }
         }
         ValidateRanking(strokes);
+    }
+
+    private void DebugGp()
+    {
+        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[_faceCount];
+        _denseStrokesBuffer.GetData(gpStrokes);
+        
+        for (int j = 0; j < gpStrokes.Length; j++)
+        {
+            Debug.Log($"GP Stroke[{j}] pos={gpStrokes[j].pos} mat={gpStrokes[j].mat} strokePointIdx={gpStrokes[j].point_id}");
+        }
     }
 
     private void ValidateRanking(StrokeData[] strokes)
