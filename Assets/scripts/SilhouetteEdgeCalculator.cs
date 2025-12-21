@@ -69,7 +69,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
     private int _initDistancesKernel;
 
     //TODO: this is supposed to be in GreasePencil format
-    private ComputeBuffer _denseStrokesBuffer;
+    public GraphicsBuffer DenseStrokesBuffer;
+    public GraphicsBuffer ColorBuffer;
     public ComputeShader sorterShader;
     
     private int _setStrokeLengthAtTailKernel;
@@ -154,7 +155,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
 
         // --- 4. Output Stroke Buffer ---
         _strokesBuffer = new ComputeBuffer(_faceCount, StrokeData.SizeOf);
-        _denseStrokesBuffer = new ComputeBuffer(_faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
+        DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
+        ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _faceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
 
         // buffers for FindHeadTail
         _nextPointerBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
@@ -205,10 +207,11 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "_strokes", _strokesBuffer);
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "numStrokesCounter", _numStrokesCounterBuffer);
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "numStrokePointsCounter", _numStrokePointsCounterBuffer);
-            sorterShader.SetBuffer(_invalidateEntriesKernel, "_denseArray", _denseStrokesBuffer);
+            sorterShader.SetBuffer(_invalidateEntriesKernel, "_denseArray", DenseStrokesBuffer);
 
             sorterShader.SetBuffer(_sorterKernel, "_strokes", _strokesBuffer);
-            sorterShader.SetBuffer(_sorterKernel, "_denseArray", _denseStrokesBuffer);
+            sorterShader.SetBuffer(_sorterKernel, "_denseArray", DenseStrokesBuffer);
+            sorterShader.SetBuffer(_sorterKernel, "_colorArray", ColorBuffer);
         }
         
         // indices = new int[_faceCount*6];
@@ -221,7 +224,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         // _indices.SetData(indices);
     }
 
-    void Update()
+    public void CalculateEdges()
     {
         if(viewCamera == null)
         {
@@ -330,7 +333,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
     private void DebugGp()
     {
         var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[_faceCount];
-        _denseStrokesBuffer.GetData(gpStrokes);
+        DenseStrokesBuffer.GetData(gpStrokes);
         
         for (int j = 0; j < gpStrokes.Length; j++)
         {
@@ -420,6 +423,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         _nextPointerBuffer?.Release();
         _numStrokesCounterBuffer?.Release();
         _numStrokePointsCounterBuffer?.Release();
+        DenseStrokesBuffer?.Release();
+        ColorBuffer?.Release();
         // _indices?.Dispose();
     }
     

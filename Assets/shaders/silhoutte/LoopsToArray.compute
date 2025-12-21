@@ -20,6 +20,7 @@ uint numStrokePointsCounter_local_dummy;
 
 
 RWStructuredBuffer<GreasePencilStrokeVert> _denseArray;
+RWStructuredBuffer<GreasePencilColorVert> _colorArray;
 
 [numthreads(64,1,1)]
 void SetStrokeLengthAtTail(uint3 id : SV_DispatchThreadID)
@@ -136,4 +137,7 @@ void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
     
     
     _denseArray[globalOffset] = gpVert;
+    
+    _colorArray[globalOffset].fcol = float4(1.0f, 1.0f, 1.0f, 1.0f);
+    _colorArray[globalOffset].vcol = float4(1.0f, 1.0f, 1.0f, 1.0f);
 }

@@ -71,6 +71,15 @@ Varyings vert(Attributes IN)
     GreasePencilStrokeVert p1 = _Pos[stroke_point_id + 0];
     GreasePencilStrokeVert p2 = _Pos[stroke_point_id + 1];
     GreasePencilStrokeVert p3 = _Pos[stroke_point_id + 2];
+    
+    if (p1.mat == -1)
+    {
+        /* Degenerate point, output nothing. */
+        Varyings OUT;
+        OUT.positionHCS = float4(0.0f, 0.0f, -3e36f, 0.0f);
+        return OUT;
+    }
+    
     /* Attribute Loading. */
     float3 pos0 = p0.pos;
     float3 pos1 = p1.pos;

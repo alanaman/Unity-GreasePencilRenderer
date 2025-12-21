@@ -21,6 +21,8 @@ public class GreasePencilData
     public List<LayerData> layers;
 }
 
+
+//TODO move into gp namespace
 [System.Serializable]
 public class MaterialData
 {
@@ -31,6 +33,22 @@ public class MaterialData
     public float[] fill_uv_rot_scale;
     public float[] fill_uv_offset;
     public float[] alignment_rot;
+    public float stroke_texture_mix;
+    public float stroke_u_scale;
+    public float fill_texture_mix;
+    public int flag;
+}
+
+[System.Serializable]
+public class GreasePencilMaterial
+{
+    public string name;
+    public Color stroke_color;
+    public Color fill_color;
+    public Color fill_mix_color;
+    public float4 fill_uv_rot_scale;
+    public float2 fill_uv_offset;
+    public float2 alignment_rot;
     public float stroke_texture_mix;
     public float stroke_u_scale;
     public float fill_texture_mix;

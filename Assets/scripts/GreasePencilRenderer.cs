@@ -6,7 +6,7 @@ using UnityEngine;
 
 public class GreasePencilRenderer : MonoBehaviour
 {
-    private const int GP_IS_STROKE_VERTEX_BIT = (1 << 30);
+    public const int GP_IS_STROKE_VERTEX_BIT = (1 << 30);
     
     public GreasePencilSO greasePencil;
     public int frameIdx = 0;
@@ -90,9 +90,10 @@ public class GreasePencilRenderer : MonoBehaviour
     };
     
     [StructLayout(LayoutKind.Sequential)]
-    struct GreasePencilColorVert {
+    public struct GreasePencilColorVert {
         public float4 vcol; /* Vertex color */
         public float4 fcol; /* Fill color */
+        public static int SizeOf => Marshal.SizeOf(typeof(GreasePencilColorVert));
     };
     
     [ContextMenu("Build Stroke Mesh")]
@@ -205,7 +206,7 @@ public class GreasePencilRenderer : MonoBehaviour
     }
     
     [StructLayout(LayoutKind.Sequential)]
-    struct GpMaterialData
+    public struct GpMaterialData
     {
         public Vector4 stroke_color;
         public Vector4 fill_color;
@@ -216,6 +217,8 @@ public class GreasePencilRenderer : MonoBehaviour
         public float stroke_u_scale;
         public float fill_texture_mix;
         public int flag;
+        
+        public static int SizeOf => Marshal.SizeOf(typeof(GpMaterialData));
     }
     private void CreateMaterialBuffer()
     {
