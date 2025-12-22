@@ -134,15 +134,15 @@ void ListRankPJ(uint3 id : SV_DispatchThreadID)
     // Stop at tail nodes (as defined by i == minPoint)
     if (i == si.minPoint)
     {
+        _strokes[i].isCyclic = si.adj != INVALID_UINT;
         return;
     }
 
     uint succ = _nextPointer[i];
-    if (succ == INVALID_UINT) return;
+
+    bool succIsTail = (succ == si.minPoint);
 
     StrokeData ss = _strokes[succ];
-    bool succIsTail = (succ == ss.minPoint);
-
     // accumulate distance and hop count from successor
     _strokes[i].distFromTail += ss.distFromTail;
     _strokes[i].rank += ss.rank;
@@ -150,7 +150,6 @@ void ListRankPJ(uint3 id : SV_DispatchThreadID)
     // If successor is a tail, stop jumping; otherwise jump to grand-successor
     if (succIsTail)
     {
-        _nextPointer[i] = INVALID_UINT;
         // mark as not cyclic if tail does not loop
         _strokes[i].isCyclic = ss.adj != INVALID_UINT;
     }

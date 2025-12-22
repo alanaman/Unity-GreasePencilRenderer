@@ -82,6 +82,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
     private ComputeBuffer _numStrokesCounterBuffer;
     private ComputeBuffer _numStrokePointsCounterBuffer;
     
+    public float radiusMultiplier = 1.0f;
+    
     void Start()
     {
         if (!SystemInfo.supportsComputeShaders)
@@ -155,8 +157,9 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
 
         // --- 4. Output Stroke Buffer ---
         _strokesBuffer = new ComputeBuffer(_faceCount, StrokeData.SizeOf);
-        DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
-        ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _faceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
+        //TODO: find a tighter limit for these buffer sizes
+        DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
+        ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
 
         // buffers for FindHeadTail
         _nextPointerBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
@@ -296,6 +299,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             sorterShader.Dispatch(_calcStrokeOffsetsKernel, threadGroups, 1, 1);
             DebugStrokes();
             sorterShader.Dispatch(_invalidateEntriesKernel, threadGroups, 1, 1);
+            
+            sorterShader.SetFloat("_radiusMultiplier", radiusMultiplier);
             sorterShader.Dispatch(_sorterKernel, threadGroups, 1, 1);
             DebugGp();
         }
@@ -332,7 +337,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
 
     private void DebugGp()
     {
-        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[_faceCount];
+        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[2*_faceCount];
         DenseStrokesBuffer.GetData(gpStrokes);
         
         for (int j = 0; j < gpStrokes.Length; j++)

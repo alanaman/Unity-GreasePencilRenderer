@@ -135,11 +135,13 @@ Varyings vert(Attributes IN)
                 /* The first point will have the index of the last point. */
                 int last_stroke_id = p0.stroke_id;
                 p0 = _Pos[last_stroke_id-2];
+                pos0 = p0.pos;
             }
 
             if (is_last) {
                 int first_stroke_id = p1.stroke_id;
                 p3 = _Pos[first_stroke_id+2];
+                pos3 = p3.pos;
             }
         }
 
@@ -161,6 +163,8 @@ Varyings vert(Attributes IN)
         float y = float(vertexId & 2) - 1.0f;        /* [-1..1] */
         
         bool is_on_p1 = is_dot || (x == -1.0f);
+        
+        
 
         float3 wpos_adj = TransformObjectToWorld((is_on_p1) ? pos0.xyz : pos3.xyz);
         float3 wpos1 = TransformObjectToWorld(pos1.xyz);
@@ -242,7 +246,7 @@ Varyings vert(Attributes IN)
         {
             screen_ofs += edge_dir * x;
         }
-
+        // screen_ofs = float2(0, y);
         float2 clip_space_per_pixel = float2(1.0 / _ScreenParams.x, 1.0 / _ScreenParams.y);
         OUT.positionHCS.xy += screen_ofs * clip_space_per_pixel * clamped_radius;
         // OUT.positionHCS.xy += screen_ofs * _ScreenParams.zw * 0.1;

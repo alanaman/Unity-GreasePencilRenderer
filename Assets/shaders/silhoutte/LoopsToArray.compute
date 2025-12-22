@@ -15,10 +15,6 @@ RWStructuredBuffer<uint> numStrokesCounter;
 RWStructuredBuffer<uint> numStrokePointsCounter;
 
 
-uint numStrokesCounter_local_dummy; // ...existing code...
-uint numStrokePointsCounter_local_dummy;
-
-
 RWStructuredBuffer<GreasePencilStrokeVert> _denseArray;
 RWStructuredBuffer<GreasePencilColorVert> _colorArray;
 
@@ -43,7 +39,7 @@ void CalculateArrayOffsets(uint3 id : SV_DispatchThreadID)
     if (s.valid == 0u) return;
     
     
-    uint strokeBufferLength = _strokes[s.minPoint].totalStrokeLength + s.isCyclic?1:0 + 2;
+    uint strokeBufferLength = _strokes[s.minPoint].totalStrokeLength + (s.isCyclic?1:0) + 2;
     
     if (_strokes[i].minPoint == i)
     {
@@ -110,6 +106,7 @@ uint pack_rotation_aspect_hardness_miter(
     return packed;
 }
 
+float _radiusMultiplier = 1.0f;
 
 [numthreads(64,1,1)]
 void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
@@ -117,14 +114,15 @@ void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
     uint i = id.x;
     if (_strokes[i].valid == 0u) return;
     StrokeData s = _strokes[i];
+    //TODO try and remove tail access here
     StrokeData tail = _strokes[s.minPoint]; 
-    int offsetInStroke = s.rank;
-    uint globalOffset = tail.strokePointsOffset + offsetInStroke + 1;
+    int offsetInStroke = s.rank+1;
+    uint globalOffset = tail.strokePointsOffset + offsetInStroke;
     
     
     GreasePencilStrokeVert gpVert;
     gpVert.pos = s.pos;
-    gpVert.radius = 1.0f;
+    gpVert.radius = _radiusMultiplier;
     
     gpVert.mat = 0;
     gpVert.stroke_id = tail.strokePointsOffset;
@@ -140,4 +138,15 @@ void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
     
     _colorArray[globalOffset].fcol = float4(1.0f, 1.0f, 1.0f, 1.0f);
     _colorArray[globalOffset].vcol = float4(1.0f, 1.0f, 1.0f, 1.0f);
+    
+    
+    //cyclic strokes require an extra point at the end
+    // this will be added by the tail
+    if (s.minPoint == i && s.isCyclic)
+    {   
+        _denseArray[tail.strokePointsOffset].stroke_id = tail.strokePointsOffset + tail.totalStrokeLength + (s.isCyclic?1:0) + 1;
+    
+        gpVert.stroke_id = tail.strokePointsOffset;
+        _denseArray[tail.strokePointsOffset + tail.totalStrokeLength + 1] = gpVert;
+    }
 }

@@ -32,6 +32,7 @@ public class SilhouetteRenderer : MonoBehaviour
     [Range(0.0f, 1.0f)] public float opacity = 1.0f;
     public Color colorTint = new(1, 1, 1, 0);
     
+    
     void Start()
     {
         _edgeCalculator = GetComponent<SilhouetteEdgeCalculator>();
