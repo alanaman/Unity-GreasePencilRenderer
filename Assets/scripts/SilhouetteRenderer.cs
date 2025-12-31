@@ -1,12 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using DefaultNamespace;
 using UnityEngine;
 using Unity.Profiling;
 using UnityEngine.Rendering;
 
 
-[RequireComponent(typeof(SilhouetteEdgeCalculator))]
+[RequireComponent(typeof(IGreasePencilEdgeCalculator))]
 public class SilhouetteRenderer : MonoBehaviour
 {
     
@@ -19,7 +20,7 @@ public class SilhouetteRenderer : MonoBehaviour
 		public Vector3 normal;
 	}
     
-    SilhouetteEdgeCalculator _edgeCalculator;
+    IGreasePencilEdgeCalculator _edgeCalculator;
     
     GraphicsBuffer _indices;
     ComputeBuffer _materialBuffer;
@@ -35,7 +36,7 @@ public class SilhouetteRenderer : MonoBehaviour
     
     void Start()
     {
-        _edgeCalculator = GetComponent<SilhouetteEdgeCalculator>();
+        _edgeCalculator = GetComponent<IGreasePencilEdgeCalculator>();
         InitBuffers();
     }
 
@@ -46,8 +47,8 @@ public class SilhouetteRenderer : MonoBehaviour
         var matProps = new MaterialPropertyBlock();
 
         // Set your custom data buffers
-        matProps.SetBuffer("_Pos", _edgeCalculator.DenseStrokesBuffer);
-        matProps.SetBuffer("_Color", _edgeCalculator.ColorBuffer);
+        matProps.SetBuffer("_Pos", _edgeCalculator.GetStrokeBuffer());
+        matProps.SetBuffer("_Color", _edgeCalculator.GetColorBuffer());
         matProps.SetBuffer("gp_materials", _materialBuffer);
         
         // Set the standard object-to-world matrix uniform.
@@ -80,13 +81,11 @@ public class SilhouetteRenderer : MonoBehaviour
     {
         ReleaseBuffers();
         
-        Mesh sourceMesh = _edgeCalculator.sourceMeshFilter.sharedMesh;
 
-        var meshIndices = sourceMesh.GetIndices(0);
-        var numFaces = meshIndices.Length / 3;
-        var indices = new int[numFaces*6]; // 6 indices per triangle
+        var bufferLength = _edgeCalculator.GetMaximumBufferLength();
+        var indices = new int[bufferLength*6]; // 6 indices per triangle
         int triangleIboIndex = 0;
-        for (int i = 0; i < numFaces; i++)
+        for (int i = 0; i < bufferLength; i++)
         {
             int vertIdxMarkedStroke = ((i) << 2) | GreasePencilRenderer.GP_IS_STROKE_VERTEX_BIT;
             indices[triangleIboIndex + 0] = vertIdxMarkedStroke + 0;

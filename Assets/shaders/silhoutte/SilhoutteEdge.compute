@@ -11,8 +11,8 @@ struct VertexData
 
 // Input Buffers
 StructuredBuffer<VertexData> _Vertices;  // All mesh vertices
-StructuredBuffer<uint> _Indices;         // Triangle indices (3 per triangle)
-StructuredBuffer<uint> _AdjIndices;    // Adjacency info (3 indices per triangle)
+StructuredBuffer<int> _Indices;         // Triangle indices (3 per triangle)
+StructuredBuffer<uint> _AdjIndices;    // Adjacency info (3 indices per triangle, INVALID_UINT if none)
 
 // Output Buffer
 RWStructuredBuffer<StrokeData> _outStrokes;
@@ -68,24 +68,27 @@ bool TryGetZeroPoint(VertexData v1, VertexData v2, out float3 zeroPoint)
 
 // Adapted version of your TryGetZeroLine function for a compute shader
 // It writes its results directly to the _outStrokes buffer at [faceIdx]
+int DecodeAdj(uint rawAdj)
+{
+    return (rawAdj == INVALID_UINT) ? ADJ_NONE : (int)rawAdj;
+}
+
 bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
 {
-    // Initialize this output element as invalid first
-    _outStrokes[faceIdx].valid = 0;
+    _outStrokes[faceIdx].adj = INVALID;
 
     int points_found = 0;
-    float3 zeroPoint; // Temporary variable to store point
+    float3 zeroPoint;
 
-    // Temporaries to keep found points + adjacency + which edge produced them
     float3 tmpPoints[2];
-    uint  tmpAdj[2];
+    int  tmpAdj[2];
     int   tmpEdgeIdx[2];
 
     // Check edge v0-v1  (edge index 0)
     if (TryGetZeroPoint(v0, v1, zeroPoint))
     {
         tmpPoints[points_found] = zeroPoint;
-        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 0]; // Adjacency for edge v0-v1
+        tmpAdj[points_found] = DecodeAdj(_AdjIndices[faceIdx * 3 + 0]);
         tmpEdgeIdx[points_found] = 0;
         points_found++;
     }
@@ -94,7 +97,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (TryGetZeroPoint(v1, v2, zeroPoint))
     {
         tmpPoints[points_found] = zeroPoint;
-        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 1]; // Adjacency for edge v1-v2
+        tmpAdj[points_found] = DecodeAdj(_AdjIndices[faceIdx * 3 + 1]);
         tmpEdgeIdx[points_found] = 1;
         points_found++;
     }
@@ -103,7 +106,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (TryGetZeroPoint(v2, v0, zeroPoint))
     {
         tmpPoints[points_found] = zeroPoint;
-        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 2]; // Adjacency for edge v2-v0
+        tmpAdj[points_found] = DecodeAdj(_AdjIndices[faceIdx * 3 + 2]);
         tmpEdgeIdx[points_found] = 2;
         points_found++;
     }
@@ -153,7 +156,6 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
             _outStrokes[faceIdx].adj = tmpAdj[0];
         }
 
-        _outStrokes[faceIdx].valid = 1;
         return true;
     }
 
@@ -169,19 +171,18 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 {
     uint faceIdx = id.x;
 
-    // Bounds check: ensure we don't read past the end of the buffers
     if (faceIdx >= _NumFaces)
     {
         return;
     }
-    _outStrokes[faceIdx].adj = INVALID_UINT;
+    _outStrokes[faceIdx].adj = INVALID;
     _outStrokes[faceIdx].isCyclic = 0;
     _outStrokes[faceIdx].isChild = 0;
 
     // --- 1. Fetch Triangle Indices ---
-    uint i0 = _Indices[faceIdx * 3 + 0];
-    uint i1 = _Indices[faceIdx * 3 + 1];
-    uint i2 = _Indices[faceIdx * 3 + 2];
+    uint i0 = (uint)_Indices[faceIdx * 3 + 0];
+    uint i1 = (uint)_Indices[faceIdx * 3 + 1];
+    uint i2 = (uint)_Indices[faceIdx * 3 + 2];
 
     // --- 2. Fetch Vertex Data ---
     // Note: If vertices are shared, this will fetch the same vertex

@@ -24,6 +24,7 @@ void SetStrokeLengthAtTail(uint3 id : SV_DispatchThreadID)
     uint idx = id.x;
     if (idx >= _NumFaces) return;
     StrokeData s = _strokes[idx];
+    if (s.adj == INVALID) return;
     if (!s.isChild)
     {
         _strokes[s.minPoint].totalStrokeLength = s.rank +1;
@@ -36,7 +37,7 @@ void CalculateArrayOffsets(uint3 id : SV_DispatchThreadID)
     uint i = id.x;
     if (i >= _NumFaces) return;
     StrokeData s = _strokes[i];
-    if (s.valid == 0u) return;
+    if (s.adj == INVALID) return;
     
     
     uint strokeBufferLength = _strokes[s.minPoint].totalStrokeLength + (s.isCyclic?1:0) + 2;
@@ -112,9 +113,8 @@ float _radiusMultiplier = 1.0f;
 void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
-    if (_strokes[i].valid == 0u) return;
+    if (_strokes[i].adj == INVALID) return;
     StrokeData s = _strokes[i];
-    //TODO try and remove tail access here
     StrokeData tail = _strokes[s.minPoint]; 
     int offsetInStroke = s.rank+1;
     uint globalOffset = tail.strokePointsOffset + offsetInStroke;
@@ -128,7 +128,6 @@ void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
     gpVert.stroke_id = tail.strokePointsOffset;
     gpVert.signed_point_id = s.isCyclic? -offsetInStroke: offsetInStroke;
     gpVert.packed_asp_hard_rot = pack_rotation_aspect_hardness_miter(0, 1.0f, 0.0f, 60.0f);
-    // this is only used for fill, we only create an outline.
     gpVert.uv_fill = float2(0.0f, 0.0f); 
     gpVert.u_stroke = s.distFromTail;
     gpVert.opacity = 1.0f;
@@ -140,8 +139,6 @@ void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
     _colorArray[globalOffset].vcol = float4(1.0f, 1.0f, 1.0f, 1.0f);
     
     
-    //cyclic strokes require an extra point at the end
-    // this will be added by the tail
     if (s.minPoint == i && s.isCyclic)
     {   
         _denseArray[tail.strokePointsOffset].stroke_id = tail.strokePointsOffset + tail.totalStrokeLength + (s.isCyclic?1:0) + 1;

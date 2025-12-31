@@ -37,14 +37,13 @@ Shader "Custom/edgeToStroke"
             
             // Declare the GraphicsBuffers that we will set from the C# script
             StructuredBuffer<int> _MeshIndices;
-            StructuredBuffer<int> _AdjIndices;
+            // adjacency not needed here; we read adj from _inEdges
 
             struct StrokeData
             {
-                float3 pos[2]; // Endpoints of the silhouette edge on this face
-                uint adj[2];   // Adjacent face index for each endpoint's edge
-                uint valid;    // 1 if a valid edge was found, 0 otherwise
-                float3 faceNormal; // Added: world-space face normal
+                float3 pos[2];
+                int adj[2];   // Adjacent face index for each endpoint's edge (-1 none, -2 invalid)
+                float3 faceNormal;
                 uint minPoint[2];
             };
             StructuredBuffer<StrokeData> _inEdges;
@@ -91,10 +90,9 @@ Shader "Custom/edgeToStroke"
                 float3 p1 = _inEdges[faceIdx].pos[0];
                 float3 p2 = _inEdges[faceIdx].pos[1];
                 float3 faceNormal = _inEdges[faceIdx].faceNormal; // fetch face normal if needed
-                
-                if (_inEdges[faceIdx].valid == 0 || length(p1-p2)<0.001)
+
+                if (_inEdges[faceIdx].adj[0] < 0 && _inEdges[faceIdx].adj[1] < 0)
                 {
-                    //discard
                     o.vertex = float4(0.0f, 0.0f, -3e36f, 0.0f);
                     o.normalWS = float3(0,0,0);
                     return o;
@@ -127,6 +125,13 @@ Shader "Custom/edgeToStroke"
                 else
                 {
                     adj = _inEdges[faceIdx].adj[1];
+                }
+                
+                if (adj < 0)
+                {
+                    o.vertex = float4(0.0f, 0.0f, -3e36f, 0.0f);
+                    o.normalWS = float3(0,0,0);
+                    return o;
                 }
                 
                 float3 pos_adj = _inEdges[adj].pos[0];
@@ -173,7 +178,7 @@ Shader "Custom/edgeToStroke"
                 // bool is_stroke_start = (p0.mat == -1 && x == -1);
                 // bool is_stroke_end = (p3.mat == -1 && x == 1);
 
-                bool is_stroke_endpoint = (adj == uint(-1));
+                bool is_stroke_endpoint = (adj == -1);
 
                 /* Mitter tangent vector. */
                 float2 miter_tan = safe_normalize(edge_adj_dir + edge_dir);

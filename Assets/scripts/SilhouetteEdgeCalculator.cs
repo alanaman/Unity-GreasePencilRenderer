@@ -2,28 +2,57 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using System.Runtime.InteropServices;
+using DefaultNamespace;
 using UnityEditor;
 
-public class SilhouetteEdgeCalculator : MonoBehaviour
+public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculator
 {
+    // Constants
+    private const int ADJ_NONE = -1;
+    private const int ADJ_INVALID = -2;
+
+    // Public assets / parameters
     public ComputeShader silhouetteShader;
+    public ComputeShader findHeadTailShader;
+    public ComputeShader sorterShader;
     public MeshFilter sourceMeshFilter;
     public Camera viewCamera;
+    public float radiusMultiplier = 1.0f;
 
+    // Debug
+    public int displayInt = 0;
+
+    // Internal state
+    private int _kernelHandle;
+    private int _faceCount;
+
+    // Compute buffers
     private ComputeBuffer _verticesBuffer;
     private ComputeBuffer _indicesBuffer;
     private ComputeBuffer _adjIndicesBuffer;
-
-    // output by compute, input for stroke rendering
     private ComputeBuffer _strokesBuffer;
+    private ComputeBuffer _nextPointerSrcBuffer;
+    private ComputeBuffer _nextPointerDstBuffer;
+    private ComputeBuffer _numStrokesCounterBuffer;
+    private ComputeBuffer _numStrokePointsCounterBuffer;
 
-    
-    // GraphicsBuffer _indices;
-    
-    public Material material;
+    // Graphics buffers for GreasePencil output
+    public GraphicsBuffer DenseStrokesBuffer;
+    public GraphicsBuffer ColorBuffer;
 
-    public int displayInt=0;
-    
+    // Kernel indices for auxiliary shaders
+    private int _initPjKernel;
+    private int _findMinPjKernel;
+    private int _listRankKernel;
+    private int _resetNextKernel;
+    private int _initDistancesKernel;
+
+    private int _setStrokeLengthAtTailKernel;
+    private int _calcStrokeOffsetsKernel;
+    private int _invalidateEntriesKernel;
+    private int _sorterKernel;
+
+    // Vertex / Stroke data used for compute buffers
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     struct VertexData
     {
@@ -35,55 +64,24 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
     struct StrokeData
     {
         public Vector3 pos;
-        public uint adj;
-        public uint valid;
+        public int adj;
         public Vector3 faceNormal;
         public uint minPoint;
         public uint rank;            // hop count to tail
         public uint isCyclic;
         public float distFromTail;   // cumulative geometric distance to tail (0 at tail)
-    
+
         public uint isChild; // 1 if this stroke point has a parent, 0 otherwise
         public uint totalStrokeLength; // total length of the stroke that contains this point
-    
+
         public uint strokeIdx; // ID of the stroke this point belongs to
         public uint strokePointsOffset; // Offset to the stroke points array
-        
-        
-        // Helper to match HLSL layout
+
         public static int SizeOf => Marshal.SizeOf(typeof(StrokeData));
     }
 
-    private int _kernelHandle;
-    private int _faceCount;
+    // Lifecycle -------------------------------------------------------------
 
-    public ComputeShader findHeadTailShader;
-
-    private ComputeBuffer _nextPointerBuffer;
-
-
-    private int _initPjKernel;
-    private int _findMinPjKernel;
-    private int _listRankKernel;
-    private int _resetNextKernel;
-    private int _initDistancesKernel;
-
-    //TODO: this is supposed to be in GreasePencil format
-    public GraphicsBuffer DenseStrokesBuffer;
-    public GraphicsBuffer ColorBuffer;
-    public ComputeShader sorterShader;
-    
-    private int _setStrokeLengthAtTailKernel;
-    private int _calcStrokeOffsetsKernel;
-    private int _invalidateEntriesKernel;
-    private int _sorterKernel;
-
-    // Add two 1-element buffers to be used as UAV atomic counters by the compute shader
-    private ComputeBuffer _numStrokesCounterBuffer;
-    private ComputeBuffer _numStrokePointsCounterBuffer;
-    
-    public float radiusMultiplier = 1.0f;
-    
     void Start()
     {
         if (!SystemInfo.supportsComputeShaders)
@@ -98,8 +96,30 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             return;
         }
 
-        // Get kernel handle
+        InitializeKernels();
+        InitializeBuffers();
+    }
+
+    void OnDestroy()
+    {
+        _verticesBuffer?.Release();
+        _indicesBuffer?.Release();
+        _adjIndicesBuffer?.Release();
+        _strokesBuffer?.Release();
+        _nextPointerSrcBuffer?.Release();
+        _nextPointerDstBuffer?.Release();
+        _numStrokesCounterBuffer?.Release();
+        _numStrokePointsCounterBuffer?.Release();
+        DenseStrokesBuffer?.Release();
+        ColorBuffer?.Release();
+    }
+
+    // Initialization helpers -----------------------------------------------
+
+    void InitializeKernels()
+    {
         _kernelHandle = silhouetteShader.FindKernel("CSMain");
+
         if (findHeadTailShader != null)
         {
             _initPjKernel = findHeadTailShader.FindKernel("InitPJ");
@@ -116,66 +136,67 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             _invalidateEntriesKernel = sorterShader.FindKernel("InvalidateEntries");
             _sorterKernel = sorterShader.FindKernel("MoveToDenseArray");
         }
-
-        // Initialize buffers
-        InitializeBuffers();
     }
 
     void InitializeBuffers()
     {
-        
-        // --- 1. Vertex Buffer ---
         Mesh mesh = sourceMeshFilter.sharedMesh;
+
+        CreateVertexBuffer(mesh);
+        CreateIndexAndAdjacencyBuffers(mesh);
+        CreateStrokeAndAuxBuffers();
+        BindBuffersToShaders();
+    }
+
+    void CreateVertexBuffer(Mesh mesh)
+    {
         Vector3[] positions = mesh.vertices;
         Vector3[] normals = mesh.normals;
         VertexData[] vertexDataArray = new VertexData[positions.Length];
         for (int i = 0; i < positions.Length; i++)
         {
-            vertexDataArray[i] = new VertexData
-            {
-                position = positions[i],
-                normal = normals[i]
-            };
+            vertexDataArray[i] = new VertexData { position = positions[i], normal = normals[i] };
         }
+
         _verticesBuffer = new ComputeBuffer(vertexDataArray.Length, Marshal.SizeOf(typeof(VertexData)));
         _verticesBuffer.SetData(vertexDataArray);
+    }
 
-        // --- 2. Index Buffer ---
+    void CreateIndexAndAdjacencyBuffers(Mesh mesh)
+    {
         int[] indices = mesh.triangles;
         _faceCount = indices.Length / 3;
+
         _indicesBuffer = new ComputeBuffer(indices.Length, sizeof(int));
         _indicesBuffer.SetData(indices);
-        
-        silhouetteShader.SetInt("_NumFaces", _faceCount);
-        
 
-        // --- 3. Adjacency Buffer ---
         uint[] adjData = CalculateAdjacency(indices);
-        
         _adjIndicesBuffer = new ComputeBuffer(adjData.Length, sizeof(uint));
         _adjIndicesBuffer.SetData(adjData);
+    }
 
-        // --- 4. Output Stroke Buffer ---
+    void CreateStrokeAndAuxBuffers()
+    {
         _strokesBuffer = new ComputeBuffer(_faceCount, StrokeData.SizeOf);
-        //TODO: find a tighter limit for these buffer sizes
-        DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
-        ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
 
-        // buffers for FindHeadTail
-        _nextPointerBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
+        // Buffer sizes mirror original code
+        DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * _faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
+        ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * _faceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
 
-        // --- 5. Create 1-element atomic counter buffers used by the sorter compute shader ---
+        _nextPointerSrcBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
+        _nextPointerDstBuffer = new ComputeBuffer(_faceCount, sizeof(uint));
+
         if (sorterShader != null)
         {
-            // 1 element uint buffers used as UAV atomic counters
             _numStrokesCounterBuffer = new ComputeBuffer(1, sizeof(uint));
             _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
-            // initialize to zero
             _numStrokesCounterBuffer.SetData(new uint[] { 0u });
             _numStrokePointsCounterBuffer.SetData(new uint[] { 0u });
         }
+    }
 
-        // --- 6. Set Buffers on Shader ---
+    void BindBuffersToShaders()
+    {
         silhouetteShader.SetBuffer(_kernelHandle, "_Vertices", _verticesBuffer);
         silhouetteShader.SetBuffer(_kernelHandle, "_Indices", _indicesBuffer);
         silhouetteShader.SetBuffer(_kernelHandle, "_AdjIndices", _adjIndicesBuffer);
@@ -183,29 +204,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         silhouetteShader.SetInt("_NumFaces", _faceCount);
 
         if (findHeadTailShader != null)
-        {
             findHeadTailShader.SetInt("_NumFaces", _faceCount);
-        
-            findHeadTailShader.SetBuffer(_initPjKernel, "_strokes", _strokesBuffer);
-            findHeadTailShader.SetBuffer(_initPjKernel, "_nextPointer", _nextPointerBuffer);
-        
-            findHeadTailShader.SetBuffer(_findMinPjKernel, "_nextPointer", _nextPointerBuffer);
-            findHeadTailShader.SetBuffer(_findMinPjKernel, "_strokes", _strokesBuffer);
-        
-            findHeadTailShader.SetBuffer(_listRankKernel, "_nextPointer", _nextPointerBuffer);
-            findHeadTailShader.SetBuffer(_listRankKernel, "_strokes", _strokesBuffer);
-            
-            findHeadTailShader.SetBuffer(_resetNextKernel, "_nextPointer", _nextPointerBuffer);
-            findHeadTailShader.SetBuffer(_resetNextKernel, "_strokes", _strokesBuffer);
-            
-            findHeadTailShader.SetBuffer(_initDistancesKernel, "_strokes", _strokesBuffer);
-            
-        }
 
         if (sorterShader != null)
         {
             sorterShader.SetInt("_NumFaces", _faceCount);
-            
+
             sorterShader.SetBuffer(_setStrokeLengthAtTailKernel, "_strokes", _strokesBuffer);
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "_strokes", _strokesBuffer);
             sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "numStrokesCounter", _numStrokesCounterBuffer);
@@ -216,75 +220,56 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
             sorterShader.SetBuffer(_sorterKernel, "_denseArray", DenseStrokesBuffer);
             sorterShader.SetBuffer(_sorterKernel, "_colorArray", ColorBuffer);
         }
-        
-        // indices = new int[_faceCount*6];
-        // for (int i = 0; i < indices.Length; i++)
-        // {
-        //     indices[i] = i;
-        // }
-        //
-        // _indices = new GraphicsBuffer(GraphicsBuffer.Target.Structured, indices.Length, sizeof(int));
-        // _indices.SetData(indices);
+    }
+
+    // Core functionality --------------------------------------------------
+
+    private void BindNextPointers(int kernel)
+    {
+        findHeadTailShader.SetBuffer(kernel, "_nextPointerSrc", _nextPointerSrcBuffer);
+        findHeadTailShader.SetBuffer(kernel, "_nextPointerDst", _nextPointerDstBuffer);
+    }
+
+    private void SwapNextPointers()
+    {
+        var tmp = _nextPointerSrcBuffer;
+        _nextPointerSrcBuffer = _nextPointerDstBuffer;
+        _nextPointerDstBuffer = tmp;
     }
 
     public void CalculateEdges()
     {
-        if(viewCamera == null)
+#if UNITY_EDITOR
+        if (viewCamera == null)
         {
             SceneView sceneView = SceneView.lastActiveSceneView;
-            if(sceneView != null)
-            {
+            if (sceneView != null)
                 viewCamera = sceneView.camera;
-            }
             else
-            {
                 viewCamera = Camera.main;
-            }
         }
+#else
+        if (viewCamera == null) viewCamera = Camera.main;
+#endif
+
         if (_strokesBuffer == null || viewCamera == null) return;
 
-        // --- 1. Set Per-Frame Uniforms ---
         silhouetteShader.SetVector("_WorldSpaceCameraPos", viewCamera.transform.position);
 
-        // Set object->world and inverse-transpose for normals (use the selected MeshFilter's transform)
         Matrix4x4 objectToWorld = sourceMeshFilter.transform.localToWorldMatrix;
         Matrix4x4 objectToWorldIT = objectToWorld.inverse.transpose;
         silhouetteShader.SetMatrix("_ObjectToWorld", objectToWorld);
         silhouetteShader.SetMatrix("_ObjectToWorldIT", objectToWorldIT);
 
-        // --- 2. Dispatch the Shader ---
         int threadGroups = Mathf.CeilToInt(_faceCount / 64.0f);
         if (threadGroups > 0)
-        {
             silhouetteShader.Dispatch(_kernelHandle, threadGroups, 1, 1);
-        }
+
         DebugDraw();
 
         if (findHeadTailShader != null)
         {
-            // Initialize minPoint + next pointers + initial distances
-            findHeadTailShader.Dispatch(_initPjKernel, threadGroups, 1, 1);
-
-            // Propagate minima only (using pointer jumping on nextPointer). This modifies _nextPointer.
-            for (int i = 0; i < 6; ++i)
-            {
-                findHeadTailShader.Dispatch(_findMinPjKernel, threadGroups, 1, 1);
-            }
-            DebugStrokes();
-
-            // Restore original successor links before computing ranking so ranking is based on original adjacency.
-            findHeadTailShader.Dispatch(_resetNextKernel, threadGroups, 1, 1);
-
-            // Reset only distances/rank, keep minPoint
-            findHeadTailShader.Dispatch(_initDistancesKernel, threadGroups, 1, 1);
-            DebugStrokes();
-
-            // Perform list ranking pointer jumping passes.
-            for (int i = 0; i < 8; ++i)
-            {
-                findHeadTailShader.Dispatch(_listRankKernel, threadGroups, 1, 1);
-            }
-            DebugStrokes(); 
+            RunFindHeadTailPasses(threadGroups);
         }
 
         if (sorterShader != null)
@@ -294,52 +279,89 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
                 _numStrokesCounterBuffer.SetData(new uint[] { 0u });
                 _numStrokePointsCounterBuffer.SetData(new uint[] { 0u });
             }
-            
+
             sorterShader.Dispatch(_setStrokeLengthAtTailKernel, threadGroups, 1, 1);
             sorterShader.Dispatch(_calcStrokeOffsetsKernel, threadGroups, 1, 1);
             DebugStrokes();
             sorterShader.Dispatch(_invalidateEntriesKernel, threadGroups, 1, 1);
-            
+
             sorterShader.SetFloat("_radiusMultiplier", radiusMultiplier);
             sorterShader.Dispatch(_sorterKernel, threadGroups, 1, 1);
             DebugGp();
         }
-
-        var matProps = new MaterialPropertyBlock();
-
-        matProps.SetBuffer("_inEdges", _strokesBuffer);
-        matProps.SetMatrix("_ObjectToWorld", sourceMeshFilter.transform.localToWorldMatrix);
-    
-        
-        RenderParams rp = new RenderParams(material);
-        rp.worldBounds = new Bounds(Vector3.zero, 1000*Vector3.one); // use tighter bounds
-        rp.matProps = matProps;
-        // Graphics.RenderPrimitivesIndexed(rp, MeshTopology.Triangles, _indices, _indices.count);
     }
+
+    public int GetMaximumBufferLength()
+    {
+        return sourceMeshFilter.sharedMesh.triangles.Length/3;
+    }
+    public GraphicsBuffer GetStrokeBuffer()
+    {
+        return DenseStrokesBuffer;
+    }
+    public GraphicsBuffer GetColorBuffer()
+    {
+        return ColorBuffer;
+    }
+
+    void RunFindHeadTailPasses(int threadGroups)
+    {
+        BindNextPointers(_initPjKernel);
+        findHeadTailShader.SetBuffer(_initPjKernel, "_strokes", _strokesBuffer);
+        findHeadTailShader.Dispatch(_initPjKernel, threadGroups, 1, 1);
+        SwapNextPointers();
+
+        for (int i = 0; i < 6; ++i)
+        {
+            BindNextPointers(_findMinPjKernel);
+            findHeadTailShader.SetBuffer(_findMinPjKernel, "_strokes", _strokesBuffer);
+            findHeadTailShader.Dispatch(_findMinPjKernel, threadGroups, 1, 1);
+            SwapNextPointers();
+        }
+        DebugStrokes();
+
+        BindNextPointers(_resetNextKernel);
+        findHeadTailShader.SetBuffer(_resetNextKernel, "_strokes", _strokesBuffer);
+        findHeadTailShader.Dispatch(_resetNextKernel, threadGroups, 1, 1);
+        SwapNextPointers();
+
+        findHeadTailShader.SetBuffer(_initDistancesKernel, "_strokes", _strokesBuffer);
+        findHeadTailShader.Dispatch(_initDistancesKernel, threadGroups, 1, 1);
+        DebugStrokes();
+
+        for (int i = 0; i < 8; ++i)
+        {
+            BindNextPointers(_listRankKernel);
+            findHeadTailShader.SetBuffer(_listRankKernel, "_strokes", _strokesBuffer);
+            findHeadTailShader.Dispatch(_listRankKernel, threadGroups, 1, 1);
+            SwapNextPointers();
+        }
+        DebugStrokes();
+    }
+
+    // Debug / validation helpers ------------------------------------------
 
     private void DebugStrokes()
     {
         StrokeData[] strokes = new StrokeData[_faceCount];
         _strokesBuffer.GetData(strokes);
 
-        // Example: log a subset
         int printCount = 0;
         for (int j = 0; j < strokes.Length && printCount < 10; j++)
         {
-            if (strokes[j].valid == 1)
+            if (strokes[j].adj != ADJ_INVALID && strokes[j].adj != ADJ_NONE)
             {
                 Debug.Log($"Stroke[{j}] pos={strokes[j].pos} adj={strokes[j].adj} minPoint={strokes[j].minPoint} rank={strokes[j].rank} dist={strokes[j].distFromTail:F4}");
                 printCount++;
             }
         }
-        ValidateRanking(strokes);
     }
 
     private void DebugGp()
     {
-        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[2*_faceCount];
+        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[2 * _faceCount];
         DenseStrokesBuffer.GetData(gpStrokes);
-        
+
         for (int j = 0; j < gpStrokes.Length; j++)
         {
             Debug.Log($"GP Stroke[{j}] pos={gpStrokes[j].pos} mat={gpStrokes[j].mat} strokePointIdx={gpStrokes[j].point_id}");
@@ -353,11 +375,11 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         int countTail = 0;
         float maxDist = 0f;
         int orderingViolations = 0;
-        const uint INVALID = uint.MaxValue;
+        const int INVALID_ADJ = ADJ_INVALID;
 
         for (int i = 0; i < strokes.Length; i++)
         {
-            if (strokes[i].valid == 0) continue;
+            if (strokes[i].adj == INVALID_ADJ) continue;
             countValid++;
             if (strokes[i].distFromTail > maxDist) maxDist = strokes[i].distFromTail;
             if (i == strokes[i].minPoint)
@@ -365,10 +387,9 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
                 countTail++;
                 continue;
             }
-            uint succ = strokes[i].adj;
-            if (succ != INVALID && succ < strokes.Length && strokes[succ].valid == 1)
+            int succ = strokes[i].adj;
+            if (succ != INVALID_ADJ && succ >= 0 && succ < strokes.Length && strokes[succ].adj != INVALID_ADJ)
             {
-                // Expect successor to be closer or equal to tail (strictly smaller distance unless equal in degenerate case)
                 if (!(strokes[i].distFromTail >= strokes[succ].distFromTail))
                 {
                     orderingViolations++;
@@ -384,82 +405,65 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
         StrokeData[] debugStrokes = new StrokeData[_faceCount];
         _strokesBuffer.GetData(debugStrokes);
 
-        const uint INVALID = uint.MaxValue;
-        
-        for(int i=0; i < debugStrokes.Length; i++)
+        const int INVALID = ADJ_INVALID;
+
+        for (int i = 0; i < debugStrokes.Length; i++)
         {
             if (i != displayInt)
-            {
                 continue;
-            }
+
             var adj1 = debugStrokes[i].adj;
 
             var pos1 = debugStrokes[i].pos;
             var pos2 = pos1;
             var pos3 = pos2;
-            if (adj1 != INVALID && adj1 < debugStrokes.Length)
+            if (adj1 != INVALID && adj1 >= 0 && adj1 < debugStrokes.Length)
             {
                 pos2 = debugStrokes[adj1].pos;
                 var adj2 = debugStrokes[adj1].adj;
 
                 pos3 = pos2;
-                if (adj2 != INVALID && adj2 < debugStrokes.Length)
+                if (adj2 != INVALID && adj2 >= 0 && adj2 < debugStrokes.Length)
                 {
                     pos3 = debugStrokes[adj2].pos;
                 }
             }
-            
-            if(debugStrokes[i].valid == 1)
+
+            if (debugStrokes[i].adj != ADJ_INVALID)
             {
                 Debug.DrawLine(pos1, pos2, Color.red);
-
-                // Debug.DrawLine(pos0, pos1, Color.green);
                 Debug.DrawLine(pos2, pos3, Color.green);
             }
         }
     }
 
-    void OnDestroy()
-    {
-        _verticesBuffer?.Release();
-        _indicesBuffer?.Release();
-        _adjIndicesBuffer?.Release();
-        _strokesBuffer?.Release();
-        _nextPointerBuffer?.Release();
-        _numStrokesCounterBuffer?.Release();
-        _numStrokePointsCounterBuffer?.Release();
-        DenseStrokesBuffer?.Release();
-        ColorBuffer?.Release();
-        // _indices?.Dispose();
-    }
-    
+    // Utility -------------------------------------------------------------
+
     private static uint[] CalculateAdjacency(int[] triangles)
     {
         if (triangles == null) throw new ArgumentNullException(nameof(triangles));
         if (triangles.Length % 3 != 0) throw new ArgumentException("Triangle array length must be a multiple of 3.", nameof(triangles));
-    
+
         int faceCount = triangles.Length / 3;
         uint[] adj = new uint[triangles.Length];
         const uint INVALID = uint.MaxValue;
-    
+
         for (int i = 0; i < adj.Length; i++) adj[i] = INVALID;
-    
+
         var edgeToFaces = new Dictionary<long, List<int>>(triangles.Length);
-        // Map an undirected edge key -> list of face indices that contain that edge
-    
+
         for (int f = 0; f < faceCount; f++)
         {
             int baseIdx = f * 3;
             int v0 = triangles[baseIdx + 0];
             int v1 = triangles[baseIdx + 1];
             int v2 = triangles[baseIdx + 2];
-    
+
             long[] keys = new long[3];
-            // three edges: (v0,v1), (v1,v2), (v2,v0)
             keys[0] = ((long)Math.Min(v0, v1) << 32) | (uint)Math.Max(v0, v1);
             keys[1] = ((long)Math.Min(v1, v2) << 32) | (uint)Math.Max(v1, v2);
             keys[2] = ((long)Math.Min(v2, v0) << 32) | (uint)Math.Max(v2, v0);
-    
+
             for (int e = 0; e < 3; e++)
             {
                 if (!edgeToFaces.TryGetValue(keys[e], out var list))
@@ -470,40 +474,37 @@ public class SilhouetteEdgeCalculator : MonoBehaviour
                 list.Add(f);
             }
         }
-    
+
         for (int f = 0; f < faceCount; f++)
-        // Fill adjacency: for each face edge, pick the other face that shares the edge (if any)
         {
             int baseIdx = f * 3;
             int v0 = triangles[baseIdx + 0];
             int v1 = triangles[baseIdx + 1];
             int v2 = triangles[baseIdx + 2];
-    
+
             long[] keys = new long[3];
             keys[0] = ((long)Math.Min(v0, v1) << 32) | (uint)Math.Max(v0, v1);
             keys[1] = ((long)Math.Min(v1, v2) << 32) | (uint)Math.Max(v1, v2);
             keys[2] = ((long)Math.Min(v2, v0) << 32) | (uint)Math.Max(v2, v0);
-    
+
             for (int e = 0; e < 3; e++)
             {
                 var faces = edgeToFaces[keys[e]];
                 uint neighbor = INVALID;
 
                 for (int k = 0; k < faces.Count; k++)
-                    // find a face in the list that is not the current face
                 {
                     int other = faces[k];
                     if (other != f)
                     {
                         neighbor = (uint)other;
-                        break; // for non-manifold edges with >2 faces, pick the first other face
+                        break;
                     }
                 }
                 adj[baseIdx + e] = neighbor;
             }
         }
-    
+
         return adj;
     }
-    
 }

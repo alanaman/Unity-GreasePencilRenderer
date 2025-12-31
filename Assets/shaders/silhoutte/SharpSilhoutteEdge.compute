@@ -1,0 +1,142 @@
+#pragma kernel CSMain
+
+// Define the input vertex structure
+struct VertexData
+{
+    float3 position;
+    float3 normal;
+};
+
+#include "siloutte_defines.hh"
+
+// Input Buffers
+StructuredBuffer<VertexData> _Vertices;  // All mesh vertices
+StructuredBuffer<uint> _Indices;         // Triangle indices (3 per triangle)
+StructuredBuffer<uint> _AdjIndices;    // Adjacency info (3 indices per triangle)
+
+// Output Buffer
+RWStructuredBuffer<StrokeData> _outStrokes;
+
+// Uniforms (constants)
+float3 _WorldSpaceCameraPos; // Camera position, set from C#
+uint _NumVerts;              // Total number of face corners
+
+// New uniforms: object->world transform and inverse-transpose for normals
+float4x4 _ObjectToWorld;
+float4x4 _ObjectToWorldIT; // inverse-transpose for normal transform
+
+bool TryGetZeroPoint(VertexData v1, VertexData v2, out float3 zeroPoint)
+{
+    // We need to find the interpolation factor 't' such that
+    // lerp(vA.scalar, vB.scalar, t) == 0
+    //
+    // sA * (1-t) + sB * t = 0
+    // sA - sA*t + sB*t = 0
+    // sA = t * (sA - sB)
+    // t = sA / (sA - sB)
+    
+    float3 dirToCam1 = normalize(_WorldSpaceCameraPos - v1.position);
+    float3 dirToCam2 = normalize(_WorldSpaceCameraPos - v2.position);
+
+    float dot1 = dot(v1.normal, dirToCam1);
+    float dot2 = dot(v2.normal, dirToCam2);
+    
+    // If dots have the same sign, no silhouette edge crosses this segment
+    if (dot1 * dot2 > 0.0f)
+    {
+        zeroPoint = float3(0, 0, 0);
+        return false;
+    }
+    
+    // Avoid division by zero, though this case (dot1 == dot2)
+    // should be filtered out by the (dot1 * dot2 > 0) check.
+    
+    return true;
+}
+
+[numthreads(64, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint vertIdx = id.x;
+    // Bounds check: ensure we don't read past the end of the buffers
+    if (vertIdx >= _NumVerts)
+    {
+        return;
+    }
+    
+    
+    uint faceIdx = vertIdx/3;
+    // TODO: the currently _AdjIndices contains face indices, make it vert indices
+    
+    uint nextVertIdx = (vertIdx + 1) % 3 + faceIdx * 3;
+    uint prevVertIdx = (vertIdx + 3 - 1) % 3 + faceIdx * 3;
+
+    _outStrokes[vertIdx].adj = INVALID;
+    _outStrokes[vertIdx].isCyclic = 0;
+    _outStrokes[vertIdx].isChild = 0;
+    
+    
+
+    // --- 2. Fetch Vertex Data ---
+    // Note: If vertices are shared, this will fetch the same vertex
+    // multiple times across different threads, which is fine.
+    VertexData vert = _Vertices[vertIdx];
+    // VertexData nextVert = _Vertices[nextVertIdx];
+    // VertexData prevVert = _Vertices[prevVertIdx];
+    
+    // float3 dirToPrevVert = normalize(_WorldSpaceCameraPos - prevVert.position);
+    // float3 dirToVert = normalize(_WorldSpaceCameraPos - vert.position);
+    
+    
+    // float dotPrevVert = dot(prevVert.normal, dirToPrevVert);
+    // float dotVert = dot(vert.normal, dirToVert);
+    
+    
+    // if (dotVert <= 0 && dotPrevVert > 0)
+    // {
+    //     float t = dotPrevVert / ( dotPrevVert - dotVert);
+    //     _outStrokes[vertIdx].pos = lerp(prevVert.position, vert.position, t);
+    //     
+    //     float3 dirToNextVert = normalize(_WorldSpaceCameraPos - nextVert.position);
+    //     float dotNextVert = dot(nextVert.normal, dirToNextVert);
+    //     
+    //     if (dotNextVert > 0.0f)
+    //     {
+    //         _outStrokes[vertIdx].adj = _AdjIndices[vertIdx];
+    //     }
+    //     else
+    //     {
+    //         _outStrokes[vertIdx].adj = _AdjIndices[nextVertIdx];
+    //     }
+    //     return;
+    // }
+    
+    uint adjVertIdx = _AdjIndices[vertIdx];
+    VertexData adjVert = _Vertices[adjVertIdx];
+
+    // --- Transform to world space using provided object matrices ---
+    VertexData w0;
+    VertexData w1;
+    VertexData w2;
+
+    // transform positions (float4 mul) and normals (inverse-transpose 3x3)
+    w0.position = mul(_ObjectToWorld, float4(vert.position, 1.0)).xyz;
+    w1.position = mul(_ObjectToWorld, float4(adjVert.position, 1.0)).xyz;
+
+    float3x3 nit = (float3x3)_ObjectToWorldIT;
+    w0.normal = normalize(mul(nit, vert.normal));
+    w1.normal = normalize(mul(nit, adjVert.normal));
+
+    _outStrokes[vertIdx].pos = vert.position;
+    // if edge between faces of vert and adjVert form a silhouette edge
+    if (dot(vert.normal, normalize(_WorldSpaceCameraPos - vert.position)) > 0.0f && 
+        dot(adjVert.normal, normalize(_WorldSpaceCameraPos - adjVert.position)) < 0.0f)
+    {
+        _outStrokes[vertIdx].adj = nextVertIdx;
+        _outStrokes[vertIdx].strokeIdx = 99;
+    }
+    else
+    {
+        _outStrokes[vertIdx].adj = adjVertIdx;
+    }
+}

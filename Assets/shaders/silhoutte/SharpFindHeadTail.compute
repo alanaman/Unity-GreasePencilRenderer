@@ -1,4 +1,5 @@
 #pragma kernel InitPJ
+#pragma kernel Reduce
 #pragma kernel ListRankPJ
 #pragma kernel FindMinPJ
 #pragma kernel ResetNextPointer
@@ -11,7 +12,7 @@ RWStructuredBuffer<StrokeData> _strokes; // read from silhouette pass (the same 
 StructuredBuffer<uint> _nextPointerSrc;
 RWStructuredBuffer<uint> _nextPointerDst; // per-stroke successor index (adjacency)
 
-uint _NumFaces;
+uint _NumVerts;
 
 // Convert float to a lexicographically sortable uint representation (preserves ordering including negatives)
 uint FloatToSortableUint(float f)
@@ -21,17 +22,28 @@ uint FloatToSortableUint(float f)
     return (u & 0x80000000u) ? ~u : (u ^ 0x80000000u);
 }
 
-// --------
+bool equals(float3 a, float3 b)
+{
+    return (a.x == b.x) && (a.y == b.y) && (a.z == b.z);
+}
 
 [numthreads(64,1,1)]
 void InitPJ(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
-    if (i >= _NumFaces) return;
+    if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
     _strokes[i].minPoint = i;
-
     uint succ = (s.adj >= 0) ? (uint)s.adj : INVALID_UINT;
+    if (succ != INVALID_UINT)
+    {
+        StrokeData succStroke = _strokes[succ];
+        if (!equals(succStroke.pos, s.pos))
+        {
+            _strokes[succ].isChild=1;
+        }
+    }
+    
     _nextPointerDst[i] = succ;
 }
 
@@ -39,10 +51,12 @@ void InitPJ(uint3 id : SV_DispatchThreadID)
 void ResetNextPointer(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
-    if (i >= _NumFaces) return;
+    if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
     _nextPointerDst[i] = (s.adj >= 0) ? (uint)s.adj : INVALID_UINT;
+    _strokes[i].isChild = 0;
 }
+
 
 bool lessThan(float3 a, float3 b)
 {
@@ -66,10 +80,44 @@ bool lessThan(StrokeData a, StrokeData b)
 
 // Pointer-jumping to propagate the minimum point
 [numthreads(64,1,1)]
+void Reduce(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _NumVerts) return;
+    StrokeData s = _strokes[i];
+    if (s.adj == INVALID)
+    {
+        _nextPointerDst[i] = INVALID_UINT;
+        return;
+    }
+
+    uint succ = _nextPointerSrc[i];
+    _nextPointerDst[i] = succ;
+    if (succ != INVALID_UINT)
+    {
+        if (_strokes[succ].isChild && equals(_strokes[succ].pos, s.pos))
+        {
+            return;
+        }
+        uint succ2hop = _nextPointerSrc[succ];
+        if (succ2hop != INVALID_UINT)
+        {
+            if (!_strokes[succ2hop].isChild && equals(_strokes[succ].pos, _strokes[succ2hop].pos))
+            {
+                _nextPointerDst[i] = succ2hop;
+                //TODO: remove this
+                _strokes[i].adj = succ2hop;
+            }
+        }
+    }
+}
+
+// Pointer-jumping to propagate the minimum point
+[numthreads(64,1,1)]
 void FindMinPJ(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
-    if (i >= _NumFaces) return;
+    if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
     if (s.adj == INVALID)
     {
@@ -95,10 +143,17 @@ void FindMinPJ(uint3 id : SV_DispatchThreadID)
 void InitDistances(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
-    if (i >= _NumFaces) return;
+    if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
     if (s.adj == INVALID)
     {
+        _strokes[i].distFromTail = 0.0f;
+        _strokes[i].rank = 0u;
+        return;
+    }
+    if (equals(s.pos, _strokes[s.adj].pos))
+    {
+        _strokes[i].adj = INVALID;
         _strokes[i].distFromTail = 0.0f;
         _strokes[i].rank = 0u;
         return;
@@ -109,7 +164,6 @@ void InitDistances(uint3 id : SV_DispatchThreadID)
     {
         _strokes[i].distFromTail = 0.0f;
         _strokes[i].rank = 0u;
-        return;
     }
     else
     {
@@ -127,7 +181,7 @@ void InitDistances(uint3 id : SV_DispatchThreadID)
 void ListRankPJ(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
-    if (i >= _NumFaces) return;
+    if (i >= _NumVerts) return;
     StrokeData si = _strokes[i];
     if (si.adj == INVALID)
     {
