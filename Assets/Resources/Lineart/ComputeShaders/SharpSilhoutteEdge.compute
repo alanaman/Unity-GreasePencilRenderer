@@ -72,8 +72,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     uint prevVertIdx = (vertIdx + 3 - 1) % 3 + faceIdx * 3;
 
     _outStrokes[vertIdx].adj = INVALID;
-    _outStrokes[vertIdx].isCyclic = 0;
-    _outStrokes[vertIdx].isChild = 0;
+    _outStrokes[vertIdx].flags = 0;
     
     
 
@@ -133,7 +132,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         dot(adjVert.normal, normalize(_WorldSpaceCameraPos - adjVert.position)) < 0.0f)
     {
         _outStrokes[vertIdx].adj = nextVertIdx;
-        _outStrokes[vertIdx].strokeIdx = 99;
     }
     else
     {

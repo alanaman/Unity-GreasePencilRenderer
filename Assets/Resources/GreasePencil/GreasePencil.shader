@@ -18,7 +18,7 @@ Shader "Custom/GreasePencil"
             #pragma vertex vert
             #pragma fragment frag
 
-            #include "gpencil_vert.hlsl"
+            #include "./gpencil_vert.hlsl"
             #include "gpencil_frag.hlsl"
 
             ENDHLSL

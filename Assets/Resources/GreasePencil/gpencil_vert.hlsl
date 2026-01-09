@@ -72,7 +72,8 @@ Varyings vert(Attributes IN)
     GreasePencilStrokeVert p2 = _Pos[stroke_point_id + 1];
     GreasePencilStrokeVert p3 = _Pos[stroke_point_id + 2];
     
-    if (p1.mat == -1)
+    // if p2.mat == -1 && p0.mat == -1 then it's a dot, we don't discard
+    if (p1.mat == -1 || (p2.mat == -1 && p0.mat != -1))
     {
         /* Degenerate point, output nothing. */
         Varyings OUT;

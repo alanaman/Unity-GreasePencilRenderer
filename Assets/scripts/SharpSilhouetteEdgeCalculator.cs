@@ -24,34 +24,6 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
     public Material material;
 
     public int displayInt=0;
-    
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    struct VertexData
-    {
-        public Vector3 position;
-        public Vector3 normal;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    struct StrokeData
-    {
-        public Vector3 pos;
-        public int adj;
-        public Vector3 faceNormal;
-        public uint minPoint;
-        public uint rank;            // hop count to tail
-        public uint isCyclic;
-        public float distFromTail;   // cumulative geometric distance to tail (0 at tail)
-    
-        public uint isChild; // 1 if this stroke point has a parent, 0 otherwise
-        public uint totalStrokeLength; // total length of the stroke that contains this point
-    
-        public uint strokeIdx; // ID of the stroke this point belongs to
-        public uint strokePointsOffset; // Offset to the stroke points array
-        
-        // Helper to match HLSL layout
-        public static int SizeOf => Marshal.SizeOf(typeof(StrokeData));
-    }
 
     private int _kernelHandle;
     private int _cornerCount;
@@ -131,16 +103,16 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         Mesh mesh = sourceMeshFilter.sharedMesh;
         Vector3[] positions = mesh.vertices;
         Vector3[] normals = mesh.normals;
-        VertexData[] vertexDataArray = new VertexData[positions.Length];
+        SilhouetteSourceVertex[] vertexDataArray = new SilhouetteSourceVertex[positions.Length];
         for (int i = 0; i < positions.Length; i++)
         {
-            vertexDataArray[i] = new VertexData
+            vertexDataArray[i] = new SilhouetteSourceVertex
             {
                 position = positions[i],
                 normal = normals[i]
             };
         }
-        _verticesBuffer = new ComputeBuffer(vertexDataArray.Length, Marshal.SizeOf(typeof(VertexData)));
+        _verticesBuffer = new ComputeBuffer(vertexDataArray.Length, Marshal.SizeOf(typeof(SilhouetteSourceVertex)));
         _verticesBuffer.SetData(vertexDataArray);
 
         // --- 2. Index Buffer ---
@@ -157,7 +129,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _adjIndicesBuffer.SetData(adjData);
 
         // --- 4. Output Stroke Buffer ---
-        _strokesBuffer = new ComputeBuffer(_cornerCount, StrokeData.SizeOf);
+        _strokesBuffer = new ComputeBuffer(_cornerCount, SilhouetteStrokeEdge.SizeOf);
         //TODO: find a tighter limit for these buffer sizes
         DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
         ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
@@ -352,7 +324,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     private void DebugStrokes()
     {
-        StrokeData[] strokes = new StrokeData[_cornerCount];
+        SilhouetteStrokeEdge[] strokes = new SilhouetteStrokeEdge[_cornerCount];
         _strokesBuffer.GetData(strokes);
 
         int printCount = 0;
@@ -377,7 +349,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         }
     }
 
-    private void ValidateRanking(StrokeData[] strokes)
+    private void ValidateRanking(SilhouetteStrokeEdge[] strokes)
     {
         if (strokes == null || strokes.Length == 0) return;
         int countValid = 0;
@@ -411,7 +383,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     private void DebugDraw()
     {
-        StrokeData[] debugStrokes = new StrokeData[_cornerCount];
+        SilhouetteStrokeEdge[] debugStrokes = new SilhouetteStrokeEdge[_cornerCount];
         _strokesBuffer.GetData(debugStrokes);
 
         const int INVALID = ADJ_INVALID;

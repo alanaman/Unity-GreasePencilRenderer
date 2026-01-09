@@ -93,7 +93,7 @@ FragOutput frag(Varyings IN)
                                             IN.aspect,
                                             IN.thickness.x,
                                             IN.hardness);
-
+    
     /* To avoid aliasing artifacts, we reduce the opacity of small strokes. */
     OUT.color *= smoothstep(0.0f, 1.0f, IN.thickness.y);
     // /* Holdout materials. */

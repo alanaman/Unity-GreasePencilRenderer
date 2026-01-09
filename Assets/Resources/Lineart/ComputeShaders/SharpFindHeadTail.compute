@@ -40,7 +40,7 @@ void InitPJ(uint3 id : SV_DispatchThreadID)
         StrokeData succStroke = _strokes[succ];
         if (!equals(succStroke.pos, s.pos))
         {
-            _strokes[succ].isChild=1;
+            _strokes[succ].flags|=STROKE_FLAG_IS_CHILD;
         }
     }
     
@@ -54,7 +54,7 @@ void ResetNextPointer(uint3 id : SV_DispatchThreadID)
     if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
     _nextPointerDst[i] = (s.adj >= 0) ? (uint)s.adj : INVALID_UINT;
-    _strokes[i].isChild = 0;
+    _strokes[i].flags&=!STROKE_FLAG_IS_CHILD;
 }
 
 
@@ -95,14 +95,14 @@ void Reduce(uint3 id : SV_DispatchThreadID)
     _nextPointerDst[i] = succ;
     if (succ != INVALID_UINT)
     {
-        if (_strokes[succ].isChild && equals(_strokes[succ].pos, s.pos))
+        if (IsChild(_strokes[succ]) && equals(_strokes[succ].pos, s.pos))
         {
             return;
         }
         uint succ2hop = _nextPointerSrc[succ];
         if (succ2hop != INVALID_UINT)
         {
-            if (!_strokes[succ2hop].isChild && equals(_strokes[succ].pos, _strokes[succ2hop].pos))
+            if (!IsChild(_strokes[succ2hop]) && equals(_strokes[succ].pos, _strokes[succ2hop].pos))
             {
                 _nextPointerDst[i] = succ2hop;
                 //TODO: remove this
@@ -171,7 +171,7 @@ void InitDistances(uint3 id : SV_DispatchThreadID)
         _strokes[i].distFromTail = d;
         _strokes[i].rank = 1u;
         
-        _strokes[s.adj].isChild = 1;
+        _strokes[s.adj].flags|=STROKE_FLAG_IS_CHILD;
     }
         
 }
@@ -191,7 +191,8 @@ void ListRankPJ(uint3 id : SV_DispatchThreadID)
 
     if (i == si.minPoint)
     {
-        _strokes[i].isCyclic = si.adj != ADJ_NONE && si.adj != INVALID;
+        if (si.adj != ADJ_NONE && si.adj != INVALID) 
+            _strokes[i].flags|=STROKE_FLAG_CYCLIC;
         _nextPointerDst[i] = _nextPointerSrc[i];
         return;
     }
@@ -207,7 +208,8 @@ void ListRankPJ(uint3 id : SV_DispatchThreadID)
 
     if (succIsTail)
     {
-        _strokes[i].isCyclic = ss.adj != ADJ_NONE && ss.adj != INVALID;
+        if (ss.adj != ADJ_NONE && ss.adj != INVALID)
+            _strokes[i].flags |= STROKE_FLAG_CYCLIC;
     }
     else
     {
