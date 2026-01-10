@@ -17,7 +17,6 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private static readonly int NextPointerSrc = Shader.PropertyToID("_nextPointerSrc");
     private static readonly int NextPointerDst = Shader.PropertyToID("_nextPointerDst");
     private static readonly int RadiusMultiplier = Shader.PropertyToID("_radiusMultiplier");
-    private static readonly int Strokes = Shader.PropertyToID("_strokes");
 
     // Public assets / parameters
     private ComputeShader _silhouetteEdgeFinder;
@@ -31,8 +30,6 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     public Camera viewCamera;
     public float radiusMultiplier = 1.0f;
 
-    // Internal state
-    private int _findSilhouetteEdge_Kernel;
 
     // Compute buffers
     private ComputeBuffer _verticesBuffer;
@@ -41,33 +38,36 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private ComputeBuffer _strokesBuffer;
     private ComputeBuffer _nextPointerSrcBuffer;
     private ComputeBuffer _nextPointerDstBuffer;
+    // Two 1-element buffers to be used as UAV atomic counters by the compute shader
     private ComputeBuffer _numStrokesCounterBuffer;
     private ComputeBuffer _numStrokePointsCounterBuffer;
 
     // Graphics buffers for GreasePencil output
-    public GraphicsBuffer DenseStrokesBuffer;
-    public GraphicsBuffer ColorBuffer;
+    private GraphicsBuffer _denseStrokesBuffer;
+    private GraphicsBuffer _colorBuffer;
 
-    // Kernel indices for auxiliary shaders
+    // Kernel indices for shaders
+    private int _findSilhouetteEdge_Kernel;
+    
     private int _initialize_Kernel;
     private int _findStrokeTail_Kernel;
-    private int _listRankKernel;
-    private int _resetNextKernel;
-    private int _initDistancesKernel;
+    private int _resetNext_Kernel;
+    private int _initDistances_Kernel;
+    private int _listRank_Kernel;
 
     private int _setStrokeLengthAtTail_Kernel;
-    private int _calcStrokeOffsetsKernel;
-    private int _invalidateEntriesKernel;
-    private int _sorterKernel;
+    private int _calcStrokeOffsets_Kernel;
+    private int _invalidateEntries_Kernel;
+    private int _sorter_Kernel;
 
 
     private const uint NUM_POINTER_JUMP_ITERATIONS = 8;
 
     private void Awake()
     {
-        _silhouetteEdgeFinder = Resources.Load<ComputeShader>("Lineart/ComputeShaders/SilhoutteEdge");
-        _edgesToStrokes = Resources.Load<ComputeShader>("Lineart/ComputeShaders/EdgesToStrokes");
-        _strokesToGreasePencilStrokes = Resources.Load<ComputeShader>("Lineart/ComputeShaders/StrokesToGreasePencil");
+        _silhouetteEdgeFinder = Instantiate(Resources.Load<ComputeShader>("Lineart/ComputeShaders/SilhouetteEdge"));
+        _edgesToStrokes = Instantiate(Resources.Load<ComputeShader>("Lineart/ComputeShaders/EdgesToStrokes"));
+        _strokesToGreasePencilStrokes = Instantiate(Resources.Load<ComputeShader>("Lineart/ComputeShaders/StrokesToGreasePencil"));
         
         _sourceMesh = GetComponent<MeshFilter>()?.sharedMesh;
         
@@ -89,6 +89,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
 
         InitializeKernels();
         InitializeBuffers();
+        BindBuffersToShaders();
     }
 
     void OnDestroy()
@@ -101,8 +102,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _nextPointerDstBuffer?.Release();
         _numStrokesCounterBuffer?.Release();
         _numStrokePointsCounterBuffer?.Release();
-        DenseStrokesBuffer?.Release();
-        ColorBuffer?.Release();
+        _denseStrokesBuffer?.Release();
+        _colorBuffer?.Release();
+
+        if (_silhouetteEdgeFinder != null) Destroy(_silhouetteEdgeFinder);
+        if (_edgesToStrokes != null) Destroy(_edgesToStrokes);
+        if (_strokesToGreasePencilStrokes != null) Destroy(_strokesToGreasePencilStrokes);
     }
 
     void InitializeKernels()
@@ -111,14 +116,14 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
 
         _initialize_Kernel = _edgesToStrokes.FindKernel("Initialize");
         _findStrokeTail_Kernel = _edgesToStrokes.FindKernel("FindStrokeTail");
-        _resetNextKernel = _edgesToStrokes.FindKernel("ResetNextPointer");
-        _initDistancesKernel = _edgesToStrokes.FindKernel("InitializeRanksAndDistances");
-        _listRankKernel = _edgesToStrokes.FindKernel("CalculateRanksAndDistances");
+        _resetNext_Kernel = _edgesToStrokes.FindKernel("ResetNextPointer");
+        _initDistances_Kernel = _edgesToStrokes.FindKernel("InitializeRanksAndDistances");
+        _listRank_Kernel = _edgesToStrokes.FindKernel("CalculateRanksAndDistances");
 
         _setStrokeLengthAtTail_Kernel = _strokesToGreasePencilStrokes.FindKernel("SetStrokeLengthAtTail");
-        _calcStrokeOffsetsKernel = _strokesToGreasePencilStrokes.FindKernel("CalculateArrayOffsets");
-        _invalidateEntriesKernel = _strokesToGreasePencilStrokes.FindKernel("InvalidateEntries");
-        _sorterKernel = _strokesToGreasePencilStrokes.FindKernel("MoveToDenseArray");
+        _calcStrokeOffsets_Kernel = _strokesToGreasePencilStrokes.FindKernel("CalculateArrayOffsets");
+        _invalidateEntries_Kernel = _strokesToGreasePencilStrokes.FindKernel("InvalidateEntries");
+        _sorter_Kernel = _strokesToGreasePencilStrokes.FindKernel("MoveToDenseArray");
     }
 
     void InitializeBuffers()
@@ -126,7 +131,6 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         CreateBuffersForSilhouetteEdgeFinder();
         CreateBuffersForEdgesToStrokes();
         CreateBuffersForGreasePencilStrokes();
-        BindBuffersToShaders();
     }
 
     void CreateBuffersForSilhouetteEdgeFinder()
@@ -163,37 +167,42 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     {
         //TODO: find a tighter limit for these buffer sizes
         //output buffers
-        DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
-        ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
+        _denseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
+        _colorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
 
         //offset calculation buffers
         _numStrokesCounterBuffer = new ComputeBuffer(1, sizeof(uint));
         _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
-        _numStrokesCounterBuffer.SetData(new uint[] { 0u });
-        _numStrokePointsCounterBuffer.SetData(new uint[] { 0u });
     }
 
     void BindBuffersToShaders()
     {
+        _silhouetteEdgeFinder.SetInt("_NumFaces", FaceCount);
         _silhouetteEdgeFinder.SetBuffer(_findSilhouetteEdge_Kernel, "_Vertices", _verticesBuffer);
         _silhouetteEdgeFinder.SetBuffer(_findSilhouetteEdge_Kernel, "_Indices", _indicesBuffer);
         _silhouetteEdgeFinder.SetBuffer(_findSilhouetteEdge_Kernel, "_AdjIndices", _adjIndicesBuffer);
         _silhouetteEdgeFinder.SetBuffer(_findSilhouetteEdge_Kernel, "_outStrokes", _strokesBuffer);
-        _silhouetteEdgeFinder.SetInt("_NumFaces", FaceCount);
 
         _edgesToStrokes.SetInt("_NumFaces", FaceCount);
         _edgesToStrokes.SetBuffer(_initialize_Kernel, "_strokes", _strokesBuffer);
-
+        _edgesToStrokes.SetBuffer(_findStrokeTail_Kernel, "_strokes", _strokesBuffer);
+        _edgesToStrokes.SetBuffer(_listRank_Kernel, "_strokes", _strokesBuffer);
+        _edgesToStrokes.SetBuffer(_resetNext_Kernel, "_strokes", _strokesBuffer);
+        _edgesToStrokes.SetBuffer(_initDistances_Kernel, "_strokes", _strokesBuffer);
+        
         _strokesToGreasePencilStrokes.SetInt("_NumFaces", FaceCount);
+        
         _strokesToGreasePencilStrokes.SetBuffer(_setStrokeLengthAtTail_Kernel, "_strokes", _strokesBuffer);
-        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsetsKernel, "_strokes", _strokesBuffer);
-        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsetsKernel, "numStrokesCounter", _numStrokesCounterBuffer);
-        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsetsKernel, "numStrokePointsCounter", _numStrokePointsCounterBuffer);
-        _strokesToGreasePencilStrokes.SetBuffer(_invalidateEntriesKernel, "_denseArray", DenseStrokesBuffer);
+        
+        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsets_Kernel, "_strokes", _strokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsets_Kernel, "numStrokesCounter", _numStrokesCounterBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsets_Kernel, "numStrokePointsCounter", _numStrokePointsCounterBuffer);
+        
+        _strokesToGreasePencilStrokes.SetBuffer(_invalidateEntries_Kernel, "_denseArray", _denseStrokesBuffer);
 
-        _strokesToGreasePencilStrokes.SetBuffer(_sorterKernel, "_strokes", _strokesBuffer);
-        _strokesToGreasePencilStrokes.SetBuffer(_sorterKernel, "_denseArray", DenseStrokesBuffer);
-        _strokesToGreasePencilStrokes.SetBuffer(_sorterKernel, "_colorArray", ColorBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_strokes", _strokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_colorArray", _colorBuffer);
     }
 
     private void BindNextPointers(int kernel)
@@ -221,25 +230,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         if (threadGroups > 0)
             _silhouetteEdgeFinder.Dispatch(_findSilhouetteEdge_Kernel, threadGroups, 1, 1);
 
-        DebugDrawSilhouetteEdges();
-
         RunEdgesToStrokePasses(threadGroups);
 
-        if (_numStrokesCounterBuffer != null && _numStrokePointsCounterBuffer != null)
-        {
-            _numStrokesCounterBuffer.SetData(new uint[] { 0u });
-            _numStrokePointsCounterBuffer.SetData(new uint[] { 0u });
-        }
-
-        _strokesToGreasePencilStrokes.Dispatch(_setStrokeLengthAtTail_Kernel, threadGroups, 1, 1);
-        _strokesToGreasePencilStrokes.Dispatch(_calcStrokeOffsetsKernel, threadGroups, 1, 1);
-        DebugStrokes();
-        _strokesToGreasePencilStrokes.Dispatch(_invalidateEntriesKernel, threadGroups, 1, 1);
-
-        _strokesToGreasePencilStrokes.SetFloat(RadiusMultiplier, radiusMultiplier);
-        _strokesToGreasePencilStrokes.Dispatch(_sorterKernel, threadGroups, 1, 1);
-        DebugGp();
+        RunStrokesToGreasePencilPass(threadGroups);
     }
+
+
 
     private void ResolveViewCamera()
     {
@@ -260,11 +256,11 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     }
     public GraphicsBuffer GetStrokeBuffer()
     {
-        return DenseStrokesBuffer;
+        return _denseStrokesBuffer;
     }
     public GraphicsBuffer GetColorBuffer()
     {
-        return ColorBuffer;
+        return _colorBuffer;
     }
 
     void RunEdgesToStrokePasses(int threadGroups)
@@ -276,29 +272,23 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
         {
             BindNextPointers(_findStrokeTail_Kernel);
-            _edgesToStrokes.SetBuffer(_findStrokeTail_Kernel, Strokes, _strokesBuffer);
             _edgesToStrokes.Dispatch(_findStrokeTail_Kernel, threadGroups, 1, 1);
             SwapNextPointers();
         }
-        DebugStrokes();
 
-        BindNextPointers(_resetNextKernel);
-        _edgesToStrokes.SetBuffer(_resetNextKernel, Strokes, _strokesBuffer);
-        _edgesToStrokes.Dispatch(_resetNextKernel, threadGroups, 1, 1);
+        //TODO: merge next two kernels
+        BindNextPointers(_resetNext_Kernel);
+        _edgesToStrokes.Dispatch(_resetNext_Kernel, threadGroups, 1, 1);
         SwapNextPointers();
 
-        _edgesToStrokes.SetBuffer(_initDistancesKernel, Strokes, _strokesBuffer);
-        _edgesToStrokes.Dispatch(_initDistancesKernel, threadGroups, 1, 1);
-        DebugStrokes();
+        _edgesToStrokes.Dispatch(_initDistances_Kernel, threadGroups, 1, 1);
 
         for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
         {
-            BindNextPointers(_listRankKernel);
-            _edgesToStrokes.SetBuffer(_listRankKernel, Strokes, _strokesBuffer);
-            _edgesToStrokes.Dispatch(_listRankKernel, threadGroups, 1, 1);
+            BindNextPointers(_listRank_Kernel);
+            _edgesToStrokes.Dispatch(_listRank_Kernel, threadGroups, 1, 1);
             SwapNextPointers();
         }
-        DebugStrokes();
     }
 
     private void DebugStrokes()
@@ -316,47 +306,29 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
             }
         }
     }
+    
+    private void RunStrokesToGreasePencilPass(int threadGroups)
+    {
+        _numStrokesCounterBuffer.SetData(new[] { 0u });
+        _numStrokePointsCounterBuffer.SetData(new[] { 0u });
+
+        _strokesToGreasePencilStrokes.Dispatch(_setStrokeLengthAtTail_Kernel, threadGroups, 1, 1);
+        _strokesToGreasePencilStrokes.Dispatch(_calcStrokeOffsets_Kernel, threadGroups, 1, 1);
+        _strokesToGreasePencilStrokes.Dispatch(_invalidateEntries_Kernel, threadGroups, 1, 1);
+
+        _strokesToGreasePencilStrokes.SetFloat(RadiusMultiplier, radiusMultiplier);
+        _strokesToGreasePencilStrokes.Dispatch(_sorter_Kernel, threadGroups, 1, 1);
+    }
 
     private void DebugGp()
     {
         var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[2 * FaceCount];
-        DenseStrokesBuffer.GetData(gpStrokes);
+        _denseStrokesBuffer.GetData(gpStrokes);
 
         for (int j = 0; j < gpStrokes.Length; j++)
         {
             Debug.Log($"GP Stroke[{j}] pos={gpStrokes[j].pos} mat={gpStrokes[j].mat} strokePointIdx={gpStrokes[j].point_id}");
         }
-    }
-
-    private void ValidateRanking(SilhouetteStrokeEdge[] strokes)
-    {
-        if (strokes == null || strokes.Length == 0) return;
-        int countValid = 0;
-        int countTail = 0;
-        float maxDist = 0f;
-        int orderingViolations = 0;
-
-        for (int i = 0; i < strokes.Length; i++)
-        {
-            if (strokes[i].adj == INVALID) continue;
-            countValid++;
-            if (strokes[i].distFromTail > maxDist) maxDist = strokes[i].distFromTail;
-            if (i == strokes[i].minPoint)
-            {
-                countTail++;
-                continue;
-            }
-            int succ = strokes[i].adj;
-            if (succ != INVALID && succ >= 0 && succ < strokes.Length && strokes[succ].adj != INVALID)
-            {
-                if (!(strokes[i].distFromTail >= strokes[succ].distFromTail))
-                {
-                    orderingViolations++;
-                }
-            }
-        }
-
-        Debug.Log($"[Ranking Validation] valid={countValid} tails={countTail} maxDist={maxDist:F4} orderingViolations={orderingViolations}");
     }
 
     private void DebugDrawSilhouetteEdges()
@@ -429,9 +401,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
                 var faces = edgeToFaces[keys[e]];
                 int neighbor = INVALID;
 
-                for (int k = 0; k < faces.Count; k++)
+                foreach (var other in faces)
                 {
-                    int other = faces[k];
                     if (other != f)
                     {
                         neighbor = other;

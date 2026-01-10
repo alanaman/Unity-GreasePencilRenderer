@@ -7,56 +7,83 @@ using UnityEditor;
 
 public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculator
 {
+    private static readonly int WorldSpaceCameraPos = Shader.PropertyToID("_WorldSpaceCameraPos");
+    private static readonly int ObjectToWorld = Shader.PropertyToID("_ObjectToWorld");
+    private static readonly int ObjectToWorldIt = Shader.PropertyToID("_ObjectToWorldIT");
+    private static readonly int NextPointerDst = Shader.PropertyToID("_nextPointerDst");
+    private static readonly int NextPointerSrc = Shader.PropertyToID("_nextPointerSrc");
+    private static readonly int RadiusMultiplier = Shader.PropertyToID("_radiusMultiplier");
     private const int ADJ_NONE = -1;
-    private const int ADJ_INVALID = -2;
+    private const int INVALID = -2;
 
-    public ComputeShader silhouetteShader;
-    public MeshFilter sourceMeshFilter;
+    private ComputeShader _sharpSilhouetteEdgeFinder;
+    private ComputeShader _sharpEdgesToStrokes;
+    private ComputeShader _strokesToGreasePencilStrokes;
+    
+    private Mesh _sourceMesh;
+    private int CornerCount => _sourceMesh.triangles.Length;
+    private int FaceCount => _sourceMesh.triangles.Length / 3;
+    
+
     public Camera viewCamera;
+    public float radiusMultiplier = 1.0f;
 
     private ComputeBuffer _verticesBuffer;
     private ComputeBuffer _indicesBuffer;
     private ComputeBuffer _adjIndicesBuffer;
-
     private ComputeBuffer _strokesBuffer;
-
-    
-    public Material material;
-
-    public int displayInt=0;
-
-    private int _kernelHandle;
-    private int _cornerCount;
-    private int _faceCount;
-
-    public ComputeShader findHeadTailShader;
-
     private ComputeBuffer _nextPointerSrcBuffer;
     private ComputeBuffer _nextPointerDstBuffer;
-
-
-    private int _initPjKernel;
-    private int _reduceKernel;
-    private int _findMinPjKernel;
-    private int _listRankKernel;
-    private int _resetNextKernel;
-    private int _initDistancesKernel;
-
-    //TODO: this is supposed to be in GreasePencil format
-    public GraphicsBuffer DenseStrokesBuffer;
-    public GraphicsBuffer ColorBuffer;
-    public ComputeShader sorterShader;
-    
-    private int _setStrokeLengthAtTailKernel;
-    private int _calcStrokeOffsetsKernel;
-    private int _invalidateEntriesKernel;
-    private int _sorterKernel;
-
-    // Add two 1-element buffers to be used as UAV atomic counters by the compute shader
+    // Two 1-element buffers to be used as UAV atomic counters by the compute shader
     private ComputeBuffer _numStrokesCounterBuffer;
     private ComputeBuffer _numStrokePointsCounterBuffer;
+
+    // Graphics buffers for GreasePencil output
+    private GraphicsBuffer _denseStrokesBuffer;
+    private GraphicsBuffer _colorBuffer;
     
-    public float radiusMultiplier = 1.0f;
+    
+    // Kernel indices for shaders
+    private int _findSharpSilhouetteEdge_Kernel;
+
+    private int _initialize_Kernel;
+    private int _reduce_Kernel;
+    private int _findStrokeTail_Kernel;
+    private int _resetNext_Kernel;
+    private int _initDistances_Kernel;
+    private int _listRank_Kernel;
+
+    private int _setStrokeLengthAtTail_Kernel;
+    private int _calcStrokeOffsets_Kernel;
+    private int _invalidateEntries_Kernel;
+    private int _sorter_Kernel;
+
+    private const uint NUM_POINTER_JUMP_ITERATIONS = 8;
+    
+    
+    private void Awake()
+    {
+        _sharpSilhouetteEdgeFinder = Instantiate(Resources.Load<ComputeShader>("Lineart/ComputeShaders/SharpSilhouetteEdge"));
+        _sharpEdgesToStrokes = Instantiate(Resources.Load<ComputeShader>("Lineart/ComputeShaders/SharpEdgesToStrokes"));
+        _strokesToGreasePencilStrokes = Instantiate(Resources.Load<ComputeShader>("Lineart/ComputeShaders/StrokesToGreasePencil"));
+        
+        _sourceMesh = GetComponent<MeshFilter>()?.sharedMesh;
+        
+        ResolveViewCamera();
+    }
+    
+    private void ResolveViewCamera()
+    {
+#if UNITY_EDITOR
+        if (viewCamera == null)
+        {
+            SceneView sceneView = SceneView.lastActiveSceneView;
+            viewCamera = sceneView != null ? sceneView.camera : Camera.main;
+        }
+#else
+        if (viewCamera == null) viewCamera = Camera.main;
+#endif
+    }
     
     void Start()
     {
@@ -66,43 +93,43 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
             return;
         }
 
-        if (sourceMeshFilter == null || sourceMeshFilter.sharedMesh == null || silhouetteShader == null)
+        if (_sourceMesh == null)
         {
-            Debug.LogError("Source MeshFilter (with a Mesh) or Silhouette Shader is not assigned.");
             return;
         }
 
-        // Get kernel handle
-        _kernelHandle = silhouetteShader.FindKernel("CSMain");
-        if (findHeadTailShader != null)
-        {
-            _initPjKernel = findHeadTailShader.FindKernel("InitPJ");
-            _reduceKernel = findHeadTailShader.FindKernel("Reduce"); 
-            _findMinPjKernel = findHeadTailShader.FindKernel("FindMinPJ");
-            _listRankKernel = findHeadTailShader.FindKernel("ListRankPJ");
-            _resetNextKernel = findHeadTailShader.FindKernel("ResetNextPointer");
-            _initDistancesKernel = findHeadTailShader.FindKernel("InitDistances");
-        }
-
-        if (sorterShader != null)
-        {
-            _setStrokeLengthAtTailKernel = sorterShader.FindKernel("SetStrokeLengthAtTail");
-            _calcStrokeOffsetsKernel = sorterShader.FindKernel("CalculateArrayOffsets");
-            _invalidateEntriesKernel = sorterShader.FindKernel("InvalidateEntries");
-            _sorterKernel = sorterShader.FindKernel("MoveToDenseArray");
-        }
-
-        // Initialize buffers
+        InitializeKernels();
         InitializeBuffers();
+        BindBuffersToShaders();
     }
 
+    void InitializeKernels()
+    {
+        _findSharpSilhouetteEdge_Kernel = _sharpSilhouetteEdgeFinder.FindKernel("FindSilhouetteEdge");
+
+        _initialize_Kernel = _sharpEdgesToStrokes.FindKernel("Initialize");
+        _reduce_Kernel = _sharpEdgesToStrokes.FindKernel("Reduce"); 
+        _findStrokeTail_Kernel = _sharpEdgesToStrokes.FindKernel("FindStrokeTail");
+        _resetNext_Kernel = _sharpEdgesToStrokes.FindKernel("ResetNextPointer");
+        _initDistances_Kernel = _sharpEdgesToStrokes.FindKernel("InitializeRanksAndDistances");
+        _listRank_Kernel = _sharpEdgesToStrokes.FindKernel("CalculateRanksAndDistances");
+
+        _setStrokeLengthAtTail_Kernel = _strokesToGreasePencilStrokes.FindKernel("SetStrokeLengthAtTail");
+        _calcStrokeOffsets_Kernel = _strokesToGreasePencilStrokes.FindKernel("CalculateArrayOffsets");
+        _invalidateEntries_Kernel = _strokesToGreasePencilStrokes.FindKernel("InvalidateEntries");
+        _sorter_Kernel = _strokesToGreasePencilStrokes.FindKernel("MoveToDenseArray");
+    }
     void InitializeBuffers()
     {
-        
-        // --- 1. Vertex Buffer ---
-        Mesh mesh = sourceMeshFilter.sharedMesh;
-        Vector3[] positions = mesh.vertices;
-        Vector3[] normals = mesh.normals;
+        CreateBuffersForSilhouetteEdgeFinder();
+        CreateBuffersForEdgesToStrokes();
+        CreateBuffersForGreasePencilStrokes();
+    }
+
+    private void CreateBuffersForSilhouetteEdgeFinder()
+    {
+        Vector3[] positions = _sourceMesh.vertices;
+        Vector3[] normals = _sourceMesh.normals;
         SilhouetteSourceVertex[] vertexDataArray = new SilhouetteSourceVertex[positions.Length];
         for (int i = 0; i < positions.Length; i++)
         {
@@ -115,95 +142,72 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _verticesBuffer = new ComputeBuffer(vertexDataArray.Length, Marshal.SizeOf(typeof(SilhouetteSourceVertex)));
         _verticesBuffer.SetData(vertexDataArray);
 
-        // --- 2. Index Buffer ---
-        int[] indices = mesh.triangles;
-        _cornerCount = indices.Length;
-        _faceCount = indices.Length / 3;
+        int[] indices = _sourceMesh.triangles;
         _indicesBuffer = new ComputeBuffer(indices.Length, sizeof(int));
         _indicesBuffer.SetData(indices);
 
-        // --- 3. Adjacency Buffer ---
-        int[] adjData = CalculateAdjacency(indices, positions);
-        
+        int[] adjData = CalculateCornerAdjacency(indices, positions);
         _adjIndicesBuffer = new ComputeBuffer(adjData.Length, sizeof(uint));
         _adjIndicesBuffer.SetData(adjData);
 
-        // --- 4. Output Stroke Buffer ---
-        _strokesBuffer = new ComputeBuffer(_cornerCount, SilhouetteStrokeEdge.SizeOf);
-        //TODO: find a tighter limit for these buffer sizes
-        DenseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
-        ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2*_faceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
-
-        // buffers for FindHeadTail
-        _nextPointerSrcBuffer = new ComputeBuffer(_cornerCount, sizeof(uint));
-        _nextPointerDstBuffer = new ComputeBuffer(_cornerCount, sizeof(uint));
-
-        // --- 5. Create 1-element atomic counter buffers used by the sorter compute shader ---
-        if (sorterShader != null)
-        {
-            // 1 element uint buffers used as UAV atomic counters
-            _numStrokesCounterBuffer = new ComputeBuffer(1, sizeof(uint));
-            _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
-            // initialize to zero
-            _numStrokesCounterBuffer.SetData(new uint[] { 0u });
-            _numStrokePointsCounterBuffer.SetData(new uint[] { 0u });
-        }
-
-        // --- 6. Set Buffers on Shader ---
-        silhouetteShader.SetBuffer(_kernelHandle, "_Vertices", _verticesBuffer);
-        silhouetteShader.SetBuffer(_kernelHandle, "_Indices", _indicesBuffer);
-        silhouetteShader.SetBuffer(_kernelHandle, "_AdjIndices", _adjIndicesBuffer);
-        silhouetteShader.SetBuffer(_kernelHandle, "_outStrokes", _strokesBuffer);
-        silhouetteShader.SetInt("_NumVerts", indices.Length);
-
-        if (findHeadTailShader != null)
-        {
-            findHeadTailShader.SetInt("_NumVerts", _cornerCount);
-        
-            findHeadTailShader.SetBuffer(_initPjKernel, "_strokes", _strokesBuffer);
-            findHeadTailShader.SetBuffer(_initPjKernel, "_nextPointerSrc", _nextPointerSrcBuffer);
-            findHeadTailShader.SetBuffer(_initPjKernel, "_nextPointerDst", _nextPointerDstBuffer);
-        
-            findHeadTailShader.SetBuffer(_reduceKernel, "_nextPointerSrc", _nextPointerSrcBuffer);
-            findHeadTailShader.SetBuffer(_reduceKernel, "_nextPointerDst", _nextPointerDstBuffer);
-            findHeadTailShader.SetBuffer(_reduceKernel, "_strokes", _strokesBuffer);
-            
-            findHeadTailShader.SetBuffer(_findMinPjKernel, "_strokes", _strokesBuffer);
-            findHeadTailShader.SetBuffer(_listRankKernel, "_strokes", _strokesBuffer);
-            findHeadTailShader.SetBuffer(_resetNextKernel, "_strokes", _strokesBuffer);
-            findHeadTailShader.SetBuffer(_initDistancesKernel, "_strokes", _strokesBuffer);
-            
-        }
-
-        if (sorterShader != null)
-        {
-            sorterShader.SetInt("_NumFaces", _cornerCount);
-            
-            sorterShader.SetBuffer(_setStrokeLengthAtTailKernel, "_strokes", _strokesBuffer);
-            sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "_strokes", _strokesBuffer);
-            sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "numStrokesCounter", _numStrokesCounterBuffer);
-            sorterShader.SetBuffer(_calcStrokeOffsetsKernel, "numStrokePointsCounter", _numStrokePointsCounterBuffer);
-            sorterShader.SetBuffer(_invalidateEntriesKernel, "_denseArray", DenseStrokesBuffer);
-
-            sorterShader.SetBuffer(_sorterKernel, "_strokes", _strokesBuffer);
-            sorterShader.SetBuffer(_sorterKernel, "_denseArray", DenseStrokesBuffer);
-            sorterShader.SetBuffer(_sorterKernel, "_colorArray", ColorBuffer);
-        }
-        
-        // indices = new int[_faceCount*6];
-        // for (int i = 0; i < indices.Length; i++)
-        // {
-        //     indices[i] = i;
-        // }
-        //
-        // _indices = new GraphicsBuffer(GraphicsBuffer.Target.Structured, indices.Length, sizeof(int));
-        // _indices.SetData(indices);
+        _strokesBuffer = new ComputeBuffer(CornerCount, SilhouetteStrokeEdge.SizeOf);
     }
+
+    void CreateBuffersForEdgesToStrokes()
+    {
+        _nextPointerSrcBuffer = new ComputeBuffer(CornerCount, sizeof(int));
+        _nextPointerDstBuffer = new ComputeBuffer(CornerCount, sizeof(int));
+    }
+    
+    void CreateBuffersForGreasePencilStrokes()
+    {
+        //TODO: find a tighter limit for these buffer sizes
+        //output buffers
+        _denseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
+        _colorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
+
+        //offset calculation buffers
+        _numStrokesCounterBuffer = new ComputeBuffer(1, sizeof(uint));
+        _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
+    }
+    
+    void BindBuffersToShaders()
+    {
+        _sharpSilhouetteEdgeFinder.SetBuffer(_findSharpSilhouetteEdge_Kernel, "_Vertices", _verticesBuffer);
+        _sharpSilhouetteEdgeFinder.SetBuffer(_findSharpSilhouetteEdge_Kernel, "_Indices", _indicesBuffer);
+        _sharpSilhouetteEdgeFinder.SetBuffer(_findSharpSilhouetteEdge_Kernel, "_AdjIndices", _adjIndicesBuffer);
+        _sharpSilhouetteEdgeFinder.SetBuffer(_findSharpSilhouetteEdge_Kernel, "_outStrokes", _strokesBuffer);
+        _sharpSilhouetteEdgeFinder.SetInt("_NumVerts", CornerCount);
+
+        _sharpEdgesToStrokes.SetInt("_NumVerts", CornerCount);
+    
+        _sharpEdgesToStrokes.SetBuffer(_initialize_Kernel, "_strokes", _strokesBuffer);
+        _sharpEdgesToStrokes.SetBuffer(_reduce_Kernel, "_strokes", _strokesBuffer);
+        _sharpEdgesToStrokes.SetBuffer(_findStrokeTail_Kernel, "_strokes", _strokesBuffer);
+        _sharpEdgesToStrokes.SetBuffer(_listRank_Kernel, "_strokes", _strokesBuffer);
+        _sharpEdgesToStrokes.SetBuffer(_resetNext_Kernel, "_strokes", _strokesBuffer);
+        _sharpEdgesToStrokes.SetBuffer(_initDistances_Kernel, "_strokes", _strokesBuffer);
+            
+        _strokesToGreasePencilStrokes.SetInt("_NumFaces", CornerCount);
+        
+        _strokesToGreasePencilStrokes.SetBuffer(_setStrokeLengthAtTail_Kernel, "_strokes", _strokesBuffer);
+        
+        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsets_Kernel, "_strokes", _strokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsets_Kernel, "numStrokesCounter", _numStrokesCounterBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsets_Kernel, "numStrokePointsCounter", _numStrokePointsCounterBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_invalidateEntries_Kernel, "_denseArray", _denseStrokesBuffer);
+        
+        _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_strokes", _strokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_colorArray", _colorBuffer);
+    }
+    
 
     private void BindNextPointers(int kernel)
     {
-        findHeadTailShader.SetBuffer(kernel, "_nextPointerSrc", _nextPointerSrcBuffer);
-        findHeadTailShader.SetBuffer(kernel, "_nextPointerDst", _nextPointerDstBuffer);
+        _sharpEdgesToStrokes.SetBuffer(kernel, NextPointerSrc, _nextPointerSrcBuffer);
+        _sharpEdgesToStrokes.SetBuffer(kernel, NextPointerDst, _nextPointerDstBuffer);
     }
 
     private void SwapNextPointers()
@@ -213,124 +217,84 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     public void CalculateEdges()
     {
-        if(viewCamera == null)
-        {
-            SceneView sceneView = SceneView.lastActiveSceneView;
-            if(sceneView != null)
-            {
-                viewCamera = sceneView.camera;
-            }
-            else
-            {
-                viewCamera = Camera.main;
-            }
-        }
-        if (_strokesBuffer == null || viewCamera == null) return;
+        if (_sourceMesh == null || viewCamera == null) return;
 
-        // --- 1. Set Per-Frame Uniforms ---
-        silhouetteShader.SetVector("_WorldSpaceCameraPos", viewCamera.transform.position);
+        _sharpSilhouetteEdgeFinder.SetVector(WorldSpaceCameraPos, viewCamera.transform.position);
 
-        // Set object->world and inverse-transpose for normals (use the selected MeshFilter's transform)
-        Matrix4x4 objectToWorld = sourceMeshFilter.transform.localToWorldMatrix;
-        Matrix4x4 objectToWorldIT = objectToWorld.inverse.transpose;
-        silhouetteShader.SetMatrix("_ObjectToWorld", objectToWorld);
-        silhouetteShader.SetMatrix("_ObjectToWorldIT", objectToWorldIT);
+        Matrix4x4 objectToWorld = transform.localToWorldMatrix;
+        _sharpSilhouetteEdgeFinder.SetMatrix(ObjectToWorld, objectToWorld);
+        _sharpSilhouetteEdgeFinder.SetMatrix(ObjectToWorldIt, objectToWorld.inverse.transpose);
 
-        // --- 2. Dispatch the Shader ---
-        int threadGroups = Mathf.CeilToInt(_faceCount / 64.0f);
+        int threadGroups = Mathf.CeilToInt(FaceCount / 64.0f);
         if (threadGroups > 0)
         {
-            silhouetteShader.Dispatch(_kernelHandle, threadGroups, 1, 1);
+            _sharpSilhouetteEdgeFinder.Dispatch(_findSharpSilhouetteEdge_Kernel, threadGroups, 1, 1);
         }
-        DebugDraw();
 
-        if (findHeadTailShader != null)
+        RunEdgesToStrokePasses(threadGroups);
+        RunStrokesToGreasePencilPass(threadGroups);
+    }
+
+    private void RunEdgesToStrokePasses(int threadGroups)
+    {
+        BindNextPointers(_initialize_Kernel);
+        _sharpEdgesToStrokes.Dispatch(_initialize_Kernel, threadGroups, 1, 1);
+        SwapNextPointers();
+
+        for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
         {
-            BindNextPointers(_initPjKernel);
-            findHeadTailShader.Dispatch(_initPjKernel, threadGroups, 1, 1);
+            BindNextPointers(_reduce_Kernel);
+            _sharpEdgesToStrokes.Dispatch(_reduce_Kernel, threadGroups, 1, 1);
             SwapNextPointers();
-
-            for (int i = 0; i < 6; ++i)
-            {
-                BindNextPointers(_reduceKernel);
-                findHeadTailShader.Dispatch(_reduceKernel, threadGroups, 1, 1);
-                SwapNextPointers();
-            }
-            DebugStrokes();
-            
-            // Restore original successor links before computing ranking so ranking is based on original adjacency.
-            BindNextPointers(_resetNextKernel);
-            findHeadTailShader.Dispatch(_resetNextKernel, threadGroups, 1, 1);
-            SwapNextPointers();
-            
-            // Propagate minima only (using pointer jumping on nextPointer). This modifies _nextPointer.
-            for (int i = 0; i < 6; ++i)
-            {
-                BindNextPointers(_findMinPjKernel);
-                findHeadTailShader.Dispatch(_findMinPjKernel, threadGroups, 1, 1);
-                SwapNextPointers();
-            }
-            DebugStrokes();
-
-            // Restore original successor links before computing ranking so ranking is based on original adjacency.
-            BindNextPointers(_resetNextKernel);
-            findHeadTailShader.Dispatch(_resetNextKernel, threadGroups, 1, 1);
-            SwapNextPointers();
-
-            // Reset only distances/rank, keep minPoint
-            findHeadTailShader.SetBuffer(_initDistancesKernel, "_strokes", _strokesBuffer);
-            findHeadTailShader.Dispatch(_initDistancesKernel, threadGroups, 1, 1);
-
-            // Perform list ranking pointer jumping passes.
-            for (int i = 0; i < 8; ++i)
-            {
-                BindNextPointers(_listRankKernel);
-                findHeadTailShader.SetBuffer(_listRankKernel, "_strokes", _strokesBuffer);
-                findHeadTailShader.Dispatch(_listRankKernel, threadGroups, 1, 1);
-                SwapNextPointers();
-            }
-            DebugStrokes(); 
         }
-
-        if (sorterShader != null)
-        {
-            if (_numStrokesCounterBuffer != null && _numStrokePointsCounterBuffer != null)
-            {
-                _numStrokesCounterBuffer.SetData(new uint[] { 0u });
-                _numStrokePointsCounterBuffer.SetData(new uint[] { 0u });
-            }
             
-            sorterShader.Dispatch(_setStrokeLengthAtTailKernel, threadGroups, 1, 1);
-            sorterShader.Dispatch(_calcStrokeOffsetsKernel, threadGroups, 1, 1);
-            DebugStrokes();
-            sorterShader.Dispatch(_invalidateEntriesKernel, threadGroups, 1, 1);
-            
-            sorterShader.SetFloat("_radiusMultiplier", radiusMultiplier);
-            sorterShader.Dispatch(_sorterKernel, threadGroups, 1, 1);
-            DebugGp();
-        }
-
-        var matProps = new MaterialPropertyBlock();
-
-        matProps.SetBuffer("_inEdges", _strokesBuffer);
-        matProps.SetMatrix("_ObjectToWorld", sourceMeshFilter.transform.localToWorldMatrix);
-    
+        BindNextPointers(_resetNext_Kernel);
+        _sharpEdgesToStrokes.Dispatch(_resetNext_Kernel, threadGroups, 1, 1);
+        SwapNextPointers();
         
-        RenderParams rp = new RenderParams(material);
-        rp.worldBounds = new Bounds(Vector3.zero, 1000*Vector3.one); // use tighter bounds
-        rp.matProps = matProps;
-        // Graphics.RenderPrimitivesIndexed(rp, MeshTopology.Triangles, _indices, _indices.count);
+        for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
+        {
+            BindNextPointers(_findStrokeTail_Kernel);
+            _sharpEdgesToStrokes.Dispatch(_findStrokeTail_Kernel, threadGroups, 1, 1);
+            SwapNextPointers();
+        }
+
+        BindNextPointers(_resetNext_Kernel);
+        _sharpEdgesToStrokes.Dispatch(_resetNext_Kernel, threadGroups, 1, 1);
+        SwapNextPointers();
+
+        _sharpEdgesToStrokes.Dispatch(_initDistances_Kernel, threadGroups, 1, 1);
+
+        for (int i = 0; i < 8; ++i)
+        {
+            BindNextPointers(_listRank_Kernel);
+            _sharpEdgesToStrokes.Dispatch(_listRank_Kernel, threadGroups, 1, 1);
+            SwapNextPointers();
+        }
+    }
+
+    private void RunStrokesToGreasePencilPass(int threadGroups)
+    {
+        _numStrokesCounterBuffer.SetData(new[] { 0u });
+        _numStrokePointsCounterBuffer.SetData(new[] { 0u });
+            
+        _strokesToGreasePencilStrokes.Dispatch(_setStrokeLengthAtTail_Kernel, threadGroups, 1, 1);
+        _strokesToGreasePencilStrokes.Dispatch(_calcStrokeOffsets_Kernel, threadGroups, 1, 1);
+        _strokesToGreasePencilStrokes.Dispatch(_invalidateEntries_Kernel, threadGroups, 1, 1);
+        
+        _strokesToGreasePencilStrokes.SetFloat(RadiusMultiplier, radiusMultiplier);
+        _strokesToGreasePencilStrokes.Dispatch(_sorter_Kernel, threadGroups, 1, 1);
     }
 
     private void DebugStrokes()
     {
-        SilhouetteStrokeEdge[] strokes = new SilhouetteStrokeEdge[_cornerCount];
+        SilhouetteStrokeEdge[] strokes = new SilhouetteStrokeEdge[CornerCount];
         _strokesBuffer.GetData(strokes);
 
         int printCount = 0;
         for (int j = 0; j < strokes.Length && printCount < 10; j++)
         {
-            if (strokes[j].adj != ADJ_INVALID && strokes[j].adj != ADJ_NONE)
+            if (strokes[j].adj != INVALID && strokes[j].adj != ADJ_NONE)
             {
                 Debug.Log($"Stroke[{j}] pos={strokes[j].pos} adj={strokes[j].adj} minPoint={strokes[j].minPoint} rank={strokes[j].rank} dist={strokes[j].distFromTail:F4}");
                 printCount++;
@@ -340,83 +304,12 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     private void DebugGp()
     {
-        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[2*_faceCount];
-        DenseStrokesBuffer.GetData(gpStrokes);
+        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[2*FaceCount];
+        _denseStrokesBuffer.GetData(gpStrokes);
         
         for (int j = 0; j < gpStrokes.Length; j++)
         {
             Debug.Log($"GP Stroke[{j}] pos={gpStrokes[j].pos} mat={gpStrokes[j].mat} strokePointIdx={gpStrokes[j].point_id}");
-        }
-    }
-
-    private void ValidateRanking(SilhouetteStrokeEdge[] strokes)
-    {
-        if (strokes == null || strokes.Length == 0) return;
-        int countValid = 0;
-        int countTail = 0;
-        float maxDist = 0f;
-        int orderingViolations = 0;
-        const int INVALID_ADJ = ADJ_INVALID;
-
-        for (int i = 0; i < strokes.Length; i++)
-        {
-            if (strokes[i].adj == INVALID_ADJ) continue;
-            countValid++;
-            if (strokes[i].distFromTail > maxDist) maxDist = strokes[i].distFromTail;
-            if (i == strokes[i].minPoint)
-            {
-                countTail++;
-                continue;
-            }
-            int succ = strokes[i].adj;
-            if (succ != INVALID_ADJ && succ >= 0 && succ < strokes.Length && strokes[succ].adj != INVALID_ADJ)
-            {
-                if (!(strokes[i].distFromTail >= strokes[succ].distFromTail))
-                {
-                    orderingViolations++;
-                }
-            }
-        }
-
-        Debug.Log($"[Ranking Validation] valid={countValid} tails={countTail} maxDist={maxDist:F4} orderingViolations={orderingViolations}");
-    }
-
-    private void DebugDraw()
-    {
-        SilhouetteStrokeEdge[] debugStrokes = new SilhouetteStrokeEdge[_cornerCount];
-        _strokesBuffer.GetData(debugStrokes);
-
-        const int INVALID = ADJ_INVALID;
-        
-        for(int i=0; i < debugStrokes.Length; i++)
-        {
-            if (i != displayInt)
-            {
-                continue;
-            }
-            var adj1 = debugStrokes[i].adj;
-
-            var pos1 = debugStrokes[i].pos;
-            var pos2 = pos1;
-            var pos3 = pos2;
-            if (adj1 != INVALID && adj1 >= 0 && adj1 < debugStrokes.Length)
-            {
-                pos2 = debugStrokes[adj1].pos;
-                var adj2 = debugStrokes[adj1].adj;
-
-                pos3 = pos2;
-                if (adj2 != INVALID && adj2 >= 0 && adj2 < debugStrokes.Length)
-                {
-                    pos3 = debugStrokes[adj2].pos;
-                }
-            }
-            
-            if (debugStrokes[i].adj != ADJ_INVALID)
-            {
-                Debug.DrawLine(pos1, pos2, Color.red);
-
-                Debug.DrawLine(pos2, pos3, Color.green);
-            }
         }
     }
 
@@ -430,23 +323,32 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _nextPointerDstBuffer?.Release();
         _numStrokesCounterBuffer?.Release();
         _numStrokePointsCounterBuffer?.Release();
-        DenseStrokesBuffer?.Release();
-        ColorBuffer?.Release();
-        // _indices?.Dispose();
+        _denseStrokesBuffer?.Release();
+        _colorBuffer?.Release();
+
+        if (_sharpSilhouetteEdgeFinder != null) Destroy(_sharpSilhouetteEdgeFinder);
+        if (_sharpEdgesToStrokes != null) Destroy(_sharpEdgesToStrokes);
+        if (_strokesToGreasePencilStrokes != null) Destroy(_strokesToGreasePencilStrokes);
     }
     
-    private static int[] CalculateAdjacency(int[] triangles, Vector3[] positions)
+    /// <summary>
+    /// For each corner, finds the index of its adjacent corner. The adjacent corner of corner C is the corner at the same position as C and part of the face that is adjacent to the edge that is clockwise from C.
+    /// </summary>
+    /// <param name="triangles"></param>
+    /// <param name="positions"></param>
+    /// <returns>array of length same as <paramref name="triangles"/> containing indices of the adjacent corners</returns>
+    private static int[] CalculateCornerAdjacency(int[] triangles, Vector3[] positions)
     {
         if (triangles == null) throw new ArgumentNullException(nameof(triangles));
         if (positions == null) throw new ArgumentNullException(nameof(positions));
-        if (triangles.Length % 3 != 0) throw new ArgumentException("Triangle array length must be a multiple of 3.", nameof(triangles));
+        var cornerCount = triangles.Length;
+        if (cornerCount % 3 != 0) throw new ArgumentException("Triangle array length must be a multiple of 3.", nameof(triangles));
 
-        int faceCount = triangles.Length / 3;
-        int[] adj = new int[triangles.Length];
-        const int INVALID = -1;
+        var faceCount = cornerCount / 3;
+        int[] adj = new int[cornerCount];
         for (int i = 0; i < adj.Length; i++) adj[i] = INVALID;
 
-        var edgeMap = new Dictionary<EdgeKey, List<EdgeCorner>>(triangles.Length);
+        var edgeMap = new Dictionary<EdgeKey, List<EdgeCorner>>(cornerCount);
 
         for (int f = 0; f < faceCount; f++)
         {
@@ -463,7 +365,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
                     list = new List<EdgeCorner>(2);
                     edgeMap[key] = list;
                 }
-                list.Add(new EdgeCorner(baseIdx + c, p0));
+                list.Add(new EdgeCorner(baseIdx + c));
             }
         }
 
@@ -499,14 +401,12 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     private readonly struct EdgeCorner
     {
-        public EdgeCorner(int cornerIndex, Vector3 startPos)
+        public EdgeCorner(int cornerIndex)
         {
             CornerIndex = cornerIndex;
-            StartPos = startPos;
         }
 
         public int CornerIndex { get; }
-        public Vector3 StartPos { get; }
     }
 
     private readonly struct EdgeKey : IEquatable<EdgeKey>
@@ -569,14 +469,14 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     public int GetMaximumBufferLength()
     {
-        return sourceMeshFilter.sharedMesh.triangles.Length;
+        return CornerCount;
     }
     public GraphicsBuffer GetStrokeBuffer()
     {
-        return DenseStrokesBuffer;
+        return _denseStrokesBuffer;
     }
     public GraphicsBuffer GetColorBuffer()
     {
-        return ColorBuffer;
+        return _colorBuffer;
     }
 }

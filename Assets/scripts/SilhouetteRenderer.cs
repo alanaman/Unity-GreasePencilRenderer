@@ -51,8 +51,8 @@ public class SilhouetteRenderer : MonoBehaviour
         matProps.SetBuffer("_Color", _edgeCalculator.GetColorBuffer());
         matProps.SetBuffer("gp_materials", _materialBuffer);
         
-        // Set the standard object-to-world matrix uniform.
-        matProps.SetMatrix("_ObjectToWorld", transform.localToWorldMatrix);
+        // Strokes are already in world coordinates
+        matProps.SetMatrix("_ObjectToWorld", Matrix4x4.identity); 
         matProps.SetFloat("gp_layer_opacity", opacity);
         matProps.SetColor("gp_layer_tint", colorTint);
         // matProps.SetFloat("gp_layer_opacity", opacity);

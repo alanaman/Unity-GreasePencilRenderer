@@ -4,7 +4,7 @@
 #pragma kernel ResetNextPointer
 #pragma kernel InitializeRanksAndDistances
 
-#include "siloutte_defines.hh"
+#include "silhouette_defines.hh"
 
 RWStructuredBuffer<StrokeData> _strokes; // read from silhouette pass (the same structured layout)
 
@@ -108,7 +108,6 @@ void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
     {
         _strokes[i].distFromTail = 0.0f;
         _strokes[i].rank = 0u;
-        return;
     }
     else
     {
@@ -118,7 +117,6 @@ void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
         
         _strokes[s.adj].flags |= STROKE_FLAG_IS_CHILD;
     }
-        
 }
 
 // Pointer-jumping list ranking: compute distance-to-tail (float) and hop count

@@ -4,11 +4,13 @@
 #pragma kernel InvalidateEntries
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-#include "siloutte_defines.hh"
+#include "silhouette_defines.hh"
 #include "Assets/Resources/GreasePencil/gpencil_info.hh"
 #include "Assets/Resources/GreasePencil/gpencil_defines.hh"
 
 RWStructuredBuffer<StrokeData> _strokes;
+
+//Todo: rename to domain size(this num verts in sharp edge case)
 uint _NumFaces;
 
 RWStructuredBuffer<uint> numStrokesCounter;

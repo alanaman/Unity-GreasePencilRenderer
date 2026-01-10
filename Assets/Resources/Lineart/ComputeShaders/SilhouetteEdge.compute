@@ -7,7 +7,7 @@ struct VertexData
     float3 normal;
 };
 
-#include "siloutte_defines.hh"
+#include "silhouette_defines.hh"
 
 // Input Buffers
 StructuredBuffer<VertexData> _Vertices;  // All mesh vertices

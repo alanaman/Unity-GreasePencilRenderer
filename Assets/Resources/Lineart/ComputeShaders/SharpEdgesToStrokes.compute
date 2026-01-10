@@ -1,11 +1,13 @@
-#pragma kernel InitPJ
+#pragma kernel Initialize
 #pragma kernel Reduce
-#pragma kernel ListRankPJ
-#pragma kernel FindMinPJ
+#pragma kernel CalculateRanksAndDistances
+#pragma kernel FindStrokeTail
 #pragma kernel ResetNextPointer
-#pragma kernel InitDistances
+#pragma kernel InitializeRanksAndDistances
 
-#include "siloutte_defines.hh"
+
+
+#include "silhouette_defines.hh"
 
 RWStructuredBuffer<StrokeData> _strokes; // read from silhouette pass (the same structured layout)
 
@@ -28,14 +30,16 @@ bool equals(float3 a, float3 b)
 }
 
 [numthreads(64,1,1)]
-void InitPJ(uint3 id : SV_DispatchThreadID)
+void Initialize(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
     _strokes[i].minPoint = i;
-    uint succ = (s.adj >= 0) ? (uint)s.adj : INVALID_UINT;
-    if (succ != INVALID_UINT)
+
+    int succ = s.adj;
+    _nextPointerDst[i] = succ;
+    if (succ >= 0)
     {
         StrokeData succStroke = _strokes[succ];
         if (!equals(succStroke.pos, s.pos))
@@ -44,7 +48,6 @@ void InitPJ(uint3 id : SV_DispatchThreadID)
         }
     }
     
-    _nextPointerDst[i] = succ;
 }
 
 [numthreads(64,1,1)]
@@ -69,9 +72,9 @@ bool lessThan(StrokeData a, StrokeData b)
 {
     if (a.adj != b.adj)
     {
-        if (a.adj == INVALID)
+        if (a.adj == ADJ_NONE)
             return true;
-        if (b.adj == INVALID)
+        if (b.adj == ADJ_NONE)
             return false;
     }
     return lessThan(a.pos, b.pos);
@@ -114,20 +117,21 @@ void Reduce(uint3 id : SV_DispatchThreadID)
 
 // Pointer-jumping to propagate the minimum point
 [numthreads(64,1,1)]
-void FindMinPJ(uint3 id : SV_DispatchThreadID)
+void FindStrokeTail(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
-    if (s.adj == INVALID)
+    
+    if (IsInvalid(s))
     {
         _nextPointerDst[i] = INVALID_UINT;
         return;
     }
 
-    uint succ = _nextPointerSrc[i];
+    int succ = _nextPointerSrc[i];
     _nextPointerDst[i] = succ;
-    if (succ != INVALID_UINT)
+    if (succ >= 0)
     {
         uint succMin = _strokes[_strokes[succ].minPoint].minPoint;
         if (lessThan(_strokes[succMin], _strokes[s.minPoint]))
@@ -140,20 +144,23 @@ void FindMinPJ(uint3 id : SV_DispatchThreadID)
 
 
 [numthreads(64,1,1)]
-void InitDistances(uint3 id : SV_DispatchThreadID)
+void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumVerts) return;
     StrokeData s = _strokes[i];
-    if (s.adj == INVALID)
+    
+    // zero length edges are invalid
+    if (equals(s.pos, _strokes[s.adj].pos))
     {
+        _strokes[i].flags |= STROKE_FLAG_IS_INVALID;
         _strokes[i].distFromTail = 0.0f;
         _strokes[i].rank = 0u;
         return;
     }
-    if (equals(s.pos, _strokes[s.adj].pos))
+    
+    if (IsInvalid(s))
     {
-        _strokes[i].adj = INVALID;
         _strokes[i].distFromTail = 0.0f;
         _strokes[i].rank = 0u;
         return;
@@ -173,17 +180,16 @@ void InitDistances(uint3 id : SV_DispatchThreadID)
         
         _strokes[s.adj].flags|=STROKE_FLAG_IS_CHILD;
     }
-        
 }
 
 // Pointer-jumping list ranking: compute distance-to-tail (float) and hop count
 [numthreads(64,1,1)]
-void ListRankPJ(uint3 id : SV_DispatchThreadID)
+void CalculateRanksAndDistances(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumVerts) return;
     StrokeData si = _strokes[i];
-    if (si.adj == INVALID)
+    if (IsInvalid(si))
     {
         _nextPointerDst[i] = INVALID_UINT;
         return;
@@ -191,8 +197,7 @@ void ListRankPJ(uint3 id : SV_DispatchThreadID)
 
     if (i == si.minPoint)
     {
-        if (si.adj != ADJ_NONE && si.adj != INVALID) 
-            _strokes[i].flags|=STROKE_FLAG_CYCLIC;
+        if (si.adj != ADJ_NONE) _strokes[i].flags |= STROKE_FLAG_CYCLIC;
         _nextPointerDst[i] = _nextPointerSrc[i];
         return;
     }
@@ -208,8 +213,7 @@ void ListRankPJ(uint3 id : SV_DispatchThreadID)
 
     if (succIsTail)
     {
-        if (ss.adj != ADJ_NONE && ss.adj != INVALID)
-            _strokes[i].flags |= STROKE_FLAG_CYCLIC;
+        if (ss.adj != ADJ_NONE) _strokes[i].flags |= STROKE_FLAG_CYCLIC;
     }
     else
     {
