@@ -1,29 +1,30 @@
-# Unity Grease Pencil & Silhouette Renderer
+# Unity Grease Pencil & Silhouette Renderer (WIP)
 
-This project provides tools for rendering non-photorealistic (NPR) effects in Unity. It features a system for importing and rendering Blender's Grease Pencil data, as well as a real-time silhouette edge detection and rendering system.
+This is a work-in-progress project exploring NPR (Non-Photorealistic Rendering) techniques in Unity. It currently consists of a renderer for Blender's Grease Pencil data and a system for real-time silhouette edge detection.
 
 ## Features
 
 ### Grease Pencil Support
-- **Data Import & Storage**: Import and store Grease Pencil data from Blender into Unity using `GreasePencilSO` ScriptableObjects. The data structure supports layers, frames, strokes, points, and materials.
-- **Rendering**: The `GreasePencilRenderer` component efficiently renders the stored Grease Pencil data using procedural geometry and Compute Buffers.
-- **Animation**: Supports playback of Grease Pencil animations by iterating through frames.
+- **Data Structure**: `GreasePencilSO` ScriptableObjects are used to hold Grease Pencil data, including layers, frames, strokes, and materials.
+  - *Note: The importer script to bring data from Blender into Unity is not currently included in this repository.*
+- **Rendering**: The `GreasePencilRenderer` component handles the rendering of the stored stroke data using procedural geometry and Compute Buffers.
+- **Animation**: Basic support for frame-by-frame animation playback.
 
 ### Silhouette Rendering
-- **Real-time Edge Detection**: The `SilhouetteRenderer` and `SilhouetteEdgeCalculator` components work together to detect silhouette edges of 3D meshes in real-time.
-- **GPU Acceleration**: Utilizes Compute Shaders for high-performance edge detection, adjacency calculation, and stroke linking (connecting edges into continuous strokes).
-- **Stylized Strokes**: Renders detected silhouettes as stylized strokes, sharing the same rendering backend as the Grease Pencil system.
+- **Edge Detection**: The `SilhouetteEdgeCalculator` component detects silhouette edges on 3D meshes in real-time.
+- **Compute Shaders**: Uses Compute Shaders for finding edges, calculating adjacency, and linking edges into strokes.
+- **Stroke Rendering**: The `SilhouetteRenderer` renders the detected edges as strokes, utilizing the same rendering logic as the Grease Pencil system.
 
 ## Getting Started
 
 ### Grease Pencil
-1. Create a `GreasePencilData` asset (or import one).
+1. Create or obtain a `GreasePencilData` asset (requires external data).
 2. Create a GameObject and add the `GreasePencilRenderer` component.
 3. Assign the `GreasePencilData` asset to the renderer.
-4. Configure materials and playback settings.
+4. Configure material settings.
 
 ### Silhouette
 1. Create a GameObject with a MeshFilter and MeshRenderer.
-2. Add the `SilhouetteEdgeCalculator` component to the GameObject.
-3. Add the `SilhouetteRenderer` component to the GameObject.
-4. Assign a material and configure stroke settings.
+2. Add the `SilhouetteEdgeCalculator` component.
+3. Add the `SilhouetteRenderer` component.
+4. Assign a material.
