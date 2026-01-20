@@ -43,5 +43,6 @@ SAMPLER(sampler_BaseMap);
 
 CBUFFER_START(UnityPerMaterial)
     half4 _BaseColor;
-float4 _BaseMap_ST;
+    float4 _BaseMap_ST;
+    float _LateralShiftFactor;
 CBUFFER_END

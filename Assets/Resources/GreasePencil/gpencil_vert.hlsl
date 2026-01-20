@@ -60,6 +60,20 @@ void g_pencil_color_output(out float4 color_mul, out float4 color_add, float4 st
     color_add.rgb *= 1.0f - mix_tex;
 }
 
+bool g_pencil_calculate_miter_dir(float2 edge_dir, float2 edge_adj_dir, bool is_stroke_endpoint, out float2 miter)
+{
+    /* Mitter tangent vector. */
+    float2 miter_tan = safe_normalize(edge_adj_dir + edge_dir);
+    float miter_dot = dot(miter_tan, edge_adj_dir);
+    /* Break corners after a certain angle to avoid really thick corners. */
+    const float miter_limit = 0.5f; /* cos(60 degrees) */
+    bool miter_break = (miter_dot < miter_limit);
+    miter_tan = (miter_break || is_stroke_endpoint) ? edge_dir : (miter_tan / miter_dot);
+    /* Rotate 90 degrees counter-clockwise. */
+    miter = float2(-miter_tan.y, miter_tan.x);
+    return miter_break;
+}
+
 Varyings vert(Attributes IN)
 {
     unity_ObjectToWorld = _ObjectToWorld;
@@ -168,8 +182,11 @@ Varyings vert(Attributes IN)
         
 
         float3 wpos_adj = TransformObjectToWorld((is_on_p1) ? pos0.xyz : pos3.xyz);
+        
+        float3 wpos0 = TransformObjectToWorld(pos0.xyz);
         float3 wpos1 = TransformObjectToWorld(pos1.xyz);
         float3 wpos2 = TransformObjectToWorld(pos2.xyz);
+        float3 wpos3 = TransformObjectToWorld(pos3.xyz);
 
         // float3 tangent;
         // if (is_dot) {
@@ -189,8 +206,10 @@ Varyings vert(Attributes IN)
         // wpos2.y += y * 0.1;
         
         float4 ndc_adj = TransformWorldToHClip(wpos_adj);
+        float4 ndc0 = TransformWorldToHClip(wpos0.xyz);
         float4 ndc1 = TransformWorldToHClip(wpos1.xyz);
         float4 ndc2 = TransformWorldToHClip(wpos2.xyz);
+        float4 ndc3 = TransformWorldToHClip(wpos3.xyz);
         
         OUT.positionHCS = (is_on_p1) ? ndc1 : ndc2;
         OUT.wPosition = (is_on_p1) ? wpos1 : wpos2;
@@ -198,21 +217,25 @@ Varyings vert(Attributes IN)
         
 
         float2 ss_adj = g_pencil_project_to_screenspace(ndc_adj);
+        float2 ss0 = g_pencil_project_to_screenspace(ndc0);
         float2 ss1 = g_pencil_project_to_screenspace(ndc1);
         float2 ss2 = g_pencil_project_to_screenspace(ndc2);
+        float2 ss3 = g_pencil_project_to_screenspace(ndc3);
         
         /* Screen-space Lines tangents. */
         float edge_len;
         float2 edge_dir = safe_normalize_and_get_length(ss2 - ss1, edge_len);
         float2 edge_adj_dir = safe_normalize((is_on_p1) ? (ss1 - ss_adj) : (ss_adj - ss2));
+        float2 edge1_dir = safe_normalize(ss1 - ss0);
+        float2 edge2_dir = safe_normalize(ss3 - ss2);
         
-        float radius = abs((is_on_p1) ? p1.radius : p2.radius);
-        radius = g_pencil_stroke_radius_modulate(radius);
+        float radius1 = g_pencil_stroke_radius_modulate(p1.radius);
+        float radius2 = g_pencil_stroke_radius_modulate(p2.radius);
         /* The radius attribute can have negative values. Make sure that it's not negative by clamping
          * to 0. */
-        float clamped_radius = max(0.0f, radius);
+        float clamped_radius1 = max(0.0f, radius1);
+        float clamped_radius2 = max(0.0f, radius2);
         
-        OUT.uv = float2(x, y) * 0.5f + 0.5f;
 
         //TODO: uncomment
         // OUT.hardness = g_pencil_decode_hardness(is_on_p1 ? p1.packed_asp_hard_rot : p2.packed_asp_hard_rot);
@@ -222,24 +245,21 @@ Varyings vert(Attributes IN)
         bool is_stroke_start = (p0.mat == -1 && x == -1);
         bool is_stroke_end = (p3.mat == -1 && x == 1);
         
-        /* Mitter tangent vector. */
-        float2 miter_tan = safe_normalize(edge_adj_dir + edge_dir);
-        float miter_dot = dot(miter_tan, edge_adj_dir);
-        /* Break corners after a certain angle to avoid really thick corners. */
-        const float miter_limit = 0.5f; /* cos(60 degrees) */
-        bool miter_break = (miter_dot < miter_limit);
-        miter_tan = (miter_break || is_stroke_start || is_stroke_end) ? edge_dir :
-                                                                        (miter_tan / miter_dot);
-        /* Rotate 90 degrees counter-clockwise. */
-        float2 miter = float2(-miter_tan.y, miter_tan.x);
+        float2 miter1;
+        float2 miter2;
+        bool miter_break1 = g_pencil_calculate_miter_dir(edge_dir, edge1_dir, is_stroke_start, miter1);
+        bool miter_break2 = g_pencil_calculate_miter_dir(edge_dir, edge2_dir, is_stroke_end, miter2);
         
         OUT.sspos.xy = ss1;
         OUT.sspos.zw = ss2;
-        OUT.thickness.x = clamped_radius / OUT.positionHCS.w;
-        OUT.thickness.y = radius / OUT.positionHCS.w;
+        OUT.thickness.x = (is_on_p1 ? clamped_radius1 : clamped_radius2) / OUT.positionHCS.w;
+        OUT.thickness.y = (is_on_p1 ? radius1 : radius2) / OUT.positionHCS.w;
         OUT.aspect = float2(1, 1);
         
-        float2 screen_ofs = miter * y;
+        // float2 screen_ofs = miter * (y + _LateralShiftFactor);
+        float2 screen_ofs = (is_on_p1 ? miter1 : miter2) * (y + _LateralShiftFactor);
+        bool miter_break = is_on_p1 ? miter_break1 : miter_break2;
+        // float2 screen_ofs = miter * (y);
         
         /* Reminder: we packed the cap flag into the sign of strength and thickness sign. */
         if ((is_stroke_start && p1.opacity > 0.0f) || (is_stroke_end && p1.radius > 0.0f) ||
@@ -249,10 +269,12 @@ Varyings vert(Attributes IN)
         }
         // screen_ofs = float2(0, y);
         float2 clip_space_per_pixel = float2(1.0 / _ScreenParams.x, 1.0 / _ScreenParams.y);
-        OUT.positionHCS.xy += screen_ofs * clip_space_per_pixel * clamped_radius;
-        // OUT.positionHCS.xy += screen_ofs * _ScreenParams.zw * 0.1;
-        
+        OUT.positionHCS.xy += screen_ofs * clip_space_per_pixel * clamped_radius1;
+        OUT.sspos.xy += miter1 *clamped_radius1/ndc1.w* _LateralShiftFactor*0.5;
+        OUT.sspos.zw += miter2 *clamped_radius2/ndc2.w* _LateralShiftFactor*0.5;
+            
         OUT.uv.x = (is_on_p1) ? p1.u_stroke : p2.u_stroke;
+        OUT.uv.y = y * 0.5f + 0.5f;
 
         //end stroke
 

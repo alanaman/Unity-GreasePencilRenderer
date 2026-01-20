@@ -4,6 +4,7 @@ Shader "Custom/GreasePencil"
     {
         [MainColor] _BaseColor("Base Color", Color) = (1, 1, 1, 1)
         [MainTexture] _BaseMap("Base Map", 2D) = "white"
+        _LateralShiftFactor("Lateral Shift Factor", Float) = 0.0
     }
 
     SubShader
