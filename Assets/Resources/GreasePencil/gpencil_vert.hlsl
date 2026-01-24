@@ -222,6 +222,9 @@ Varyings vert(Attributes IN)
         float2 ss2 = g_pencil_project_to_screenspace(ndc2);
         float2 ss3 = g_pencil_project_to_screenspace(ndc3);
         
+        //TODO: These 1-2 calculations are being duplicated for multiple vertices
+        //move them to reduce repetitive calculations
+        
         /* Screen-space Lines tangents. */
         float edge_len;
         float2 edge_dir = safe_normalize_and_get_length(ss2 - ss1, edge_len);
@@ -235,6 +238,7 @@ Varyings vert(Attributes IN)
          * to 0. */
         float clamped_radius1 = max(0.0f, radius1);
         float clamped_radius2 = max(0.0f, radius2);
+        float clamped_radius = is_on_p1 ? clamped_radius1 : clamped_radius2;
         
 
         //TODO: uncomment
@@ -244,32 +248,64 @@ Varyings vert(Attributes IN)
         //TODO dot
         bool is_stroke_start = (p0.mat == -1 && x == -1);
         bool is_stroke_end = (p3.mat == -1 && x == 1);
+
+        /* Break corners after a certain angle to avoid really thick corners. */
+        const float miter_limit = 0.5f; /* cos(60 degrees) */
         
         float2 miter1;
         float2 miter2;
-        bool miter_break1 = g_pencil_calculate_miter_dir(edge_dir, edge1_dir, is_stroke_start, miter1);
-        bool miter_break2 = g_pencil_calculate_miter_dir(edge_dir, edge2_dir, is_stroke_end, miter2);
-        
+        float2 miter_tan1 = safe_normalize(edge1_dir + edge_dir);
+        float miter_dot1 = dot(miter_tan1, edge1_dir);
+        /* Rotate 90 degrees counter-clockwise. */
+        miter1 = float2(-miter_tan1.y, miter_tan1.x);
+        bool miter_break1 = (miter_dot1 < miter_limit);
+        miter1 = miter1 / miter_dot1;
+        // miter1 = miter1 / miter_dot1;
+
+        /* Mitter tangent vector. */
+        float2 miter_tan2 = safe_normalize(edge2_dir + edge_dir);
+        float miter_dot2 = dot(miter_tan2, edge2_dir);
+        /* Rotate 90 degrees counter-clockwise. */
+        miter2 = float2(-miter_tan2.y, miter_tan2.x);
+        bool miter_break2 = (miter_dot2 < miter_limit);
+        miter2 = miter2 / miter_dot2;
+        // miter2 = miter2 / miter_dot2;
+
         OUT.sspos.xy = ss1;
         OUT.sspos.zw = ss2;
         OUT.thickness.x = (is_on_p1 ? clamped_radius1 : clamped_radius2) / OUT.positionHCS.w;
         OUT.thickness.y = (is_on_p1 ? radius1 : radius2) / OUT.positionHCS.w;
         OUT.aspect = float2(1, 1);
+
         
-        // float2 screen_ofs = miter * (y + _LateralShiftFactor);
-        float2 screen_ofs = (is_on_p1 ? miter1 : miter2) * (y + _LateralShiftFactor);
+        float2 miter = is_on_p1 ? miter1 : miter2;
         bool miter_break = is_on_p1 ? miter_break1 : miter_break2;
-        // float2 screen_ofs = miter * (y);
-        
-        /* Reminder: we packed the cap flag into the sign of strength and thickness sign. */
-        if ((is_stroke_start && p1.opacity > 0.0f) || (is_stroke_end && p1.radius > 0.0f) ||
-            (miter_break && !is_stroke_start && !is_stroke_end))
+        float2 screen_ofs;
+        if (!miter_break)
         {
-            screen_ofs += edge_dir * x;
+            screen_ofs = miter * (y+_LateralShiftFactor);
         }
+        else
+        {
+            /* Reminder: we packed the cap flag into the sign of strength and thickness sign. */
+            if ((is_stroke_start && p1.opacity > 0.0f) || (is_stroke_end && p1.radius > 0.0f))
+            {
+                screen_ofs = edge_dir * x;
+                screen_ofs += float2(-edge_dir.y, edge_dir.x) * (y+_LateralShiftFactor);
+            }
+            else if (!is_stroke_start && !is_stroke_end)
+            {
+                // screen_ofs = edge_dir * x*(1+_LateralShiftFactor);
+                screen_ofs = edge_dir * x*(1+_LateralShiftFactor)*sqrt(3);
+                screen_ofs += float2(-edge_dir.y, edge_dir.x) * (y+_LateralShiftFactor);
+            }
+        }
+        
+        
         // screen_ofs = float2(0, y);
+        
         float2 clip_space_per_pixel = float2(1.0 / _ScreenParams.x, 1.0 / _ScreenParams.y);
-        OUT.positionHCS.xy += screen_ofs * clip_space_per_pixel * clamped_radius1;
+        OUT.positionHCS.xy += screen_ofs * clip_space_per_pixel * clamped_radius;
         OUT.sspos.xy += miter1 *clamped_radius1/ndc1.w* _LateralShiftFactor*0.5;
         OUT.sspos.zw += miter2 *clamped_radius2/ndc2.w* _LateralShiftFactor*0.5;
             

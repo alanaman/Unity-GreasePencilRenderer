@@ -17,4 +17,12 @@ public struct SilhouetteStrokeEdge
     public uint strokePointsOffset; // Offset to the stroke points array
 
     public static int SizeOf => Marshal.SizeOf(typeof(SilhouetteStrokeEdge));
+
+    public const uint STROKE_FLAG_CYCLIC = 1 << 0;
+    public const uint STROKE_FLAG_IS_CHILD = 1<<1;
+    public const uint STROKE_FLAG_IS_INVALID = 1<<2;
+    
+    public bool IsCyclic() => (flags & STROKE_FLAG_CYCLIC) != 0;
+    public bool IsChild() => (flags & STROKE_FLAG_IS_CHILD) != 0;
+    public bool IsInvalid() => (flags & STROKE_FLAG_IS_INVALID) != 0;
 }

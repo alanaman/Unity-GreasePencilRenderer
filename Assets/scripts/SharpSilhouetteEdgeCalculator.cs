@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using UnityEngine;
 using System.Runtime.InteropServices;
 using DefaultNamespace;
@@ -59,8 +60,9 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
     private int _sorter_Kernel;
 
     private const uint NUM_POINTER_JUMP_ITERATIONS = 8;
-    
-    
+    private const float KERNEL_SIZE = 128.0f;
+
+
     private void Awake()
     {
         _sharpSilhouetteEdgeFinder = Instantiate(Resources.Load<ComputeShader>("Lineart/ComputeShaders/SharpSilhouetteEdge"));
@@ -171,6 +173,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
     }
     
+    [SuppressMessage("ReSharper", "Unity.PreferAddressByIdToGraphicsParams")]
     void BindBuffersToShaders()
     {
         _sharpSilhouetteEdgeFinder.SetBuffer(_findSharpSilhouetteEdge_Kernel, "_Vertices", _verticesBuffer);
@@ -225,7 +228,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _sharpSilhouetteEdgeFinder.SetMatrix(ObjectToWorld, objectToWorld);
         _sharpSilhouetteEdgeFinder.SetMatrix(ObjectToWorldIt, objectToWorld.inverse.transpose);
 
-        int threadGroups = Mathf.CeilToInt(FaceCount / 64.0f);
+        int threadGroups = Mathf.CeilToInt(FaceCount / KERNEL_SIZE);
         if (threadGroups > 0)
         {
             _sharpSilhouetteEdgeFinder.Dispatch(_findSharpSilhouetteEdge_Kernel, threadGroups, 1, 1);

@@ -20,7 +20,7 @@ RWStructuredBuffer<uint> numStrokePointsCounter;
 RWStructuredBuffer<GreasePencilStrokeVert> _denseArray;
 RWStructuredBuffer<GreasePencilColorVert> _colorArray;
 
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void SetStrokeLengthAtTail(uint3 id : SV_DispatchThreadID)
 {
     uint idx = id.x;
@@ -33,7 +33,7 @@ void SetStrokeLengthAtTail(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void CalculateArrayOffsets(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
@@ -51,7 +51,7 @@ void CalculateArrayOffsets(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void InvalidateEntries(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
@@ -112,7 +112,7 @@ uint pack_rotation_aspect_hardness_miter(
 
 float _radiusMultiplier = 1.0f;
 
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;

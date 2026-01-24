@@ -29,7 +29,7 @@ bool equals(float3 a, float3 b)
     return (a.x == b.x) && (a.y == b.y) && (a.z == b.z);
 }
 
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void Initialize(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
@@ -50,7 +50,7 @@ void Initialize(uint3 id : SV_DispatchThreadID)
     
 }
 
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void ResetNextPointer(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
@@ -82,7 +82,7 @@ bool lessThan(StrokeData a, StrokeData b)
 
 
 // Pointer-jumping to propagate the minimum point
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void Reduce(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
@@ -116,7 +116,7 @@ void Reduce(uint3 id : SV_DispatchThreadID)
 }
 
 // Pointer-jumping to propagate the minimum point
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void FindStrokeTail(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
@@ -143,7 +143,7 @@ void FindStrokeTail(uint3 id : SV_DispatchThreadID)
 }
 
 
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
@@ -183,7 +183,7 @@ void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
 }
 
 // Pointer-jumping list ranking: compute distance-to-tail (float) and hop count
-[numthreads(64,1,1)]
+[numthreads(128,1,1)]
 void CalculateRanksAndDistances(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;

@@ -12,7 +12,7 @@ struct VertexData
 // Input Buffers
 StructuredBuffer<VertexData> _Vertices;  // All mesh vertices
 StructuredBuffer<int> _Indices;         // Triangle indices (3 per triangle)
-StructuredBuffer<uint> _AdjIndices;    // Adjacency info (3 indices per triangle, INVALID_UINT if none)
+StructuredBuffer<int> _AdjIndices;    // Adjacency info (3 indices per triangle, INVALID_UINT if none)
 
 // Output Buffer
 RWStructuredBuffer<StrokeData> _outStrokes;
@@ -66,13 +66,6 @@ bool TryGetZeroPoint(VertexData v1, VertexData v2, out float3 zeroPoint)
     return true;
 }
 
-// Adapted version of your TryGetZeroLine function for a compute shader
-// It writes its results directly to the _outStrokes buffer at [faceIdx]
-int DecodeAdj(uint rawAdj)
-{
-    return (rawAdj == INVALID_UINT) ? ADJ_NONE : (int)rawAdj;
-}
-
 bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
 {
     int points_found = 0;
@@ -86,7 +79,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (TryGetZeroPoint(v0, v1, zeroPoint))
     {
         tmpPoints[points_found] = zeroPoint;
-        tmpAdj[points_found] = DecodeAdj(_AdjIndices[faceIdx * 3 + 0]);
+        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 0];
         tmpEdgeIdx[points_found] = 0;
         points_found++;
     }
@@ -95,7 +88,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (TryGetZeroPoint(v1, v2, zeroPoint))
     {
         tmpPoints[points_found] = zeroPoint;
-        tmpAdj[points_found] = DecodeAdj(_AdjIndices[faceIdx * 3 + 1]);
+        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 1];
         tmpEdgeIdx[points_found] = 1;
         points_found++;
     }
@@ -104,11 +97,11 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
     if (TryGetZeroPoint(v2, v0, zeroPoint))
     {
         tmpPoints[points_found] = zeroPoint;
-        tmpAdj[points_found] = DecodeAdj(_AdjIndices[faceIdx * 3 + 2]);
+        tmpAdj[points_found] = _AdjIndices[faceIdx * 3 + 2];
         tmpEdgeIdx[points_found] = 2;
         points_found++;
     }
-    
+    _outStrokes[faceIdx].minPoint = points_found;
     // If we found exactly two points, a valid silhouette line segment
     // crosses this triangle.
     if (points_found == 2)
@@ -154,10 +147,10 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
             _outStrokes[faceIdx].adj = tmpAdj[0];
         }
 
+        _outStrokes[faceIdx].flags &= !STROKE_FLAG_IS_INVALID;
         return true;
     }
     
-    _outStrokes[faceIdx].flags |= STROKE_FLAG_IS_INVALID;
     return false;
 }
 
@@ -165,7 +158,7 @@ bool TryGetZeroLine(VertexData v0, VertexData v1, VertexData v2, uint faceIdx)
 // for each input face (triangle), a line is generated if it contains a silhouette edge
 // input is triangle list with adjacency info
 // output is one StrokeData per triangle (valid is set only if a silhoutte line was found)
-[numthreads(64, 1, 1)]
+[numthreads(128, 1, 1)]
 void FindSilhouetteEdge(uint3 id : SV_DispatchThreadID)
 {
     uint faceIdx = id.x;
@@ -174,7 +167,7 @@ void FindSilhouetteEdge(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
-    _outStrokes[faceIdx].flags = 0;
+    _outStrokes[faceIdx].flags = STROKE_FLAG_IS_INVALID;
 
     // --- 1. Fetch Triangle Indices ---
     uint i0 = (uint)_Indices[faceIdx * 3 + 0];

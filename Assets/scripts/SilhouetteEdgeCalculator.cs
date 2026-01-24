@@ -1,16 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using UnityEngine;
 using System.Runtime.InteropServices;
 using DefaultNamespace;
 using UnityEditor;
+using System.Linq;
 
 public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculator
 {
 
     // Constants
     private const int ADJ_NONE = -1;
-    private const int INVALID = -2;
     private static readonly int WorldSpaceCameraPos = Shader.PropertyToID("_WorldSpaceCameraPos");
     private static readonly int ObjectToWorldIt = Shader.PropertyToID("_ObjectToWorldIT");
     private static readonly int ObjectToWorld = Shader.PropertyToID("_ObjectToWorld");
@@ -62,6 +63,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
 
 
     private const uint NUM_POINTER_JUMP_ITERATIONS = 8;
+    private const float KERNEL_SIZE = 128.0f;
 
     private void Awake()
     {
@@ -150,7 +152,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _indicesBuffer = new ComputeBuffer(indices.Length, sizeof(int));
         _indicesBuffer.SetData(indices);
 
-        int[] adjData = CalculateAdjacency(indices);
+        int[] adjData = CalculateAdjacency(indices, positions);
         _adjIndicesBuffer = new ComputeBuffer(adjData.Length, sizeof(uint));
         _adjIndicesBuffer.SetData(adjData);
         
@@ -175,6 +177,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
     }
 
+    [SuppressMessage("ReSharper", "Unity.PreferAddressByIdToGraphicsParams")]
     void BindBuffersToShaders()
     {
         _silhouetteEdgeFinder.SetInt("_NumFaces", FaceCount);
@@ -226,11 +229,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _silhouetteEdgeFinder.SetMatrix(ObjectToWorld, objectToWorld);
         _silhouetteEdgeFinder.SetMatrix(ObjectToWorldIt, objectToWorld.inverse.transpose);
 
-        int threadGroups = Mathf.CeilToInt(FaceCount / 64.0f);
+        int threadGroups = Mathf.CeilToInt(FaceCount / KERNEL_SIZE);
         if (threadGroups > 0)
             _silhouetteEdgeFinder.Dispatch(_findSilhouetteEdge_Kernel, threadGroups, 1, 1);
 
         RunEdgesToStrokePasses(threadGroups);
+        // DebugDrawSilhouetteEdges();
 
         RunStrokesToGreasePencilPass(threadGroups);
     }
@@ -299,7 +303,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         int printCount = 0;
         for (int j = 0; j < strokes.Length && printCount < 10; j++)
         {
-            if (strokes[j].adj != INVALID && strokes[j].adj != ADJ_NONE)
+            if (strokes[j].adj != ADJ_NONE)
             {
                 Debug.Log($"Stroke[{j}] pos={strokes[j].pos} adj={strokes[j].adj} minPoint={strokes[j].minPoint} rank={strokes[j].rank} dist={strokes[j].distFromTail:F4}");
                 printCount++;
@@ -335,13 +339,13 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     {
         var debugStrokes = new SilhouetteStrokeEdge[FaceCount];
         _strokesBuffer.GetData(debugStrokes);
-
+        
         for (int i = 0; i < debugStrokes.Length; i++)
         {
             var adj1 = debugStrokes[i].adj;
 
             var pos1 = debugStrokes[i].pos;
-            if (adj1 != INVALID && adj1 >= 0 && adj1 < debugStrokes.Length)
+            if (!debugStrokes[i].IsInvalid() && adj1 >= 0 && adj1 < debugStrokes.Length)
             {
                 var pos2 = debugStrokes[adj1].pos;
                 Debug.DrawLine(pos1, pos2, Color.red);
@@ -349,70 +353,107 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         }
     }
 
-    private static int[] CalculateAdjacency(int[] triangles)
+private static int[] CalculateAdjacency(int[] triangles, Vector3[] vertices, float epsilon = 0.0001f)
+{
+    if (triangles == null) throw new ArgumentNullException(nameof(triangles));
+    int faceCount = triangles.Length / 3;
+    int[] adj = new int[triangles.Length];
+    for (int i = 0; i < adj.Length; i++) adj[i] = -1; // ADJ_NONE
+
+    // 1. Create a map where every vertex points to a "master" vertex at the same position
+    int[] vertexMap = new int[vertices.Length];
+    // Use a dictionary to group vertices by position bucket/hash
+    var posDict = new Dictionary<Vector3, int>(vertices.Length); 
+    
+    // Note: Vector3 equality usually has issues with floats, but Unity/System.Numerics
+    // Structs often implement decent hash codes. For high robustness, you might need
+    // to Quantize the position or use a specialized comparer.
+    for (int i = 0; i < vertices.Length; i++)
     {
-        if (triangles == null) throw new ArgumentNullException(nameof(triangles));
-        if (triangles.Length % 3 != 0) throw new ArgumentException("Triangle array length must be a multiple of 3.", nameof(triangles));
-
-        int faceCount = triangles.Length / 3;
-        int[] adj = new int[triangles.Length];
-
-        for (int i = 0; i < adj.Length; i++) adj[i] = INVALID;
-
-        var edgeToFaces = new Dictionary<long, List<int>>(triangles.Length);
-
-        for (int f = 0; f < faceCount; f++)
+        if (posDict.TryGetValue(vertices[i], out int masterIndex))
         {
-            int baseIdx = f * 3;
-            int v0 = triangles[baseIdx + 0];
-            int v1 = triangles[baseIdx + 1];
-            int v2 = triangles[baseIdx + 2];
-
-            long[] keys = new long[3];
-            keys[0] = ((long)Math.Min(v0, v1) << 32) | (uint)Math.Max(v0, v1);
-            keys[1] = ((long)Math.Min(v1, v2) << 32) | (uint)Math.Max(v1, v2);
-            keys[2] = ((long)Math.Min(v2, v0) << 32) | (uint)Math.Max(v2, v0);
-
-            for (int e = 0; e < 3; e++)
-            {
-                if (!edgeToFaces.TryGetValue(keys[e], out var list))
-                {
-                    list = new List<int>(2);
-                    edgeToFaces[keys[e]] = list;
-                }
-                list.Add(f);
-            }
+            vertexMap[i] = masterIndex;
         }
-
-        for (int f = 0; f < faceCount; f++)
+        else
         {
-            int baseIdx = f * 3;
-            int v0 = triangles[baseIdx + 0];
-            int v1 = triangles[baseIdx + 1];
-            int v2 = triangles[baseIdx + 2];
-
-            long[] keys = new long[3];
-            keys[0] = ((long)Math.Min(v0, v1) << 32) | (uint)Math.Max(v0, v1);
-            keys[1] = ((long)Math.Min(v1, v2) << 32) | (uint)Math.Max(v1, v2);
-            keys[2] = ((long)Math.Min(v2, v0) << 32) | (uint)Math.Max(v2, v0);
-
-            for (int e = 0; e < 3; e++)
-            {
-                var faces = edgeToFaces[keys[e]];
-                int neighbor = INVALID;
-
-                foreach (var other in faces)
-                {
-                    if (other != f)
-                    {
-                        neighbor = other;
-                        break;
-                    }
-                }
-                adj[baseIdx + e] = neighbor;
-            }
+            posDict[vertices[i]] = i;
+            vertexMap[i] = i;
         }
-
-        return adj;
     }
+
+    var edgeToFaces = new Dictionary<long, List<int>>(triangles.Length);
+
+    // 2. Build Edge Dictionary using the REMAPPED indices
+    for (int f = 0; f < faceCount; f++)
+    {
+        int baseIdx = f * 3;
+        // Get original indices
+        int v0 = triangles[baseIdx + 0];
+        int v1 = triangles[baseIdx + 1];
+        int v2 = triangles[baseIdx + 2];
+
+        // Convert to unique spatial indices
+        int u0 = vertexMap[v0];
+        int u1 = vertexMap[v1];
+        int u2 = vertexMap[v2];
+
+        // Define edges using unique indices
+        long[] keys = new long[3];
+        keys[0] = MakeEdgeKey(u0, u1);
+        keys[1] = MakeEdgeKey(u1, u2);
+        keys[2] = MakeEdgeKey(u2, u0);
+
+        for (int e = 0; e < 3; e++)
+        {
+            if (!edgeToFaces.TryGetValue(keys[e], out var list))
+            {
+                list = new List<int>();
+                edgeToFaces[keys[e]] = list;
+            }
+            list.Add(f);
+        }
+    }
+
+    // 3. Resolve Adjacency
+    for (int f = 0; f < faceCount; f++)
+    {
+        int baseIdx = f * 3;
+        int v0 = triangles[baseIdx + 0];
+        int v1 = triangles[baseIdx + 1];
+        int v2 = triangles[baseIdx + 2];
+
+        // Must use the same mapping here
+        int u0 = vertexMap[v0];
+        int u1 = vertexMap[v1];
+        int u2 = vertexMap[v2];
+
+        long[] keys = new long[3];
+        keys[0] = MakeEdgeKey(u0, u1);
+        keys[1] = MakeEdgeKey(u1, u2);
+        keys[2] = MakeEdgeKey(u2, u0);
+
+        for (int e = 0; e < 3; e++)
+        {
+            var faces = edgeToFaces[keys[e]];
+            // With split vertices, an edge might have more than 2 faces touching it
+            // if the geometry is non-manifold. But for standard adjacency,
+            // we just want the "other" face.
+            foreach (var other in faces)
+            {
+                if (other != f)
+                {
+                    adj[baseIdx + e] = other;
+                    break;
+                }
+            }
+        }
+    }
+
+    return adj;
+}
+
+private static long MakeEdgeKey(int i1, int i2)
+{
+    return ((long)Math.Min(i1, i2) << 32) | (uint)Math.Max(i1, i2);
+}
 }
