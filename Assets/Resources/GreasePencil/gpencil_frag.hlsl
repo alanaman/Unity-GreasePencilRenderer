@@ -4,8 +4,10 @@
 
 #include "gpencil_info.hh"
 #include "gpencil_attribs.hlsl"
-#include "common_shader_util.hlsl"
+#include "Assets/Resources/common/common_shader_util.hlsl"
 #include "draw_grease_pencil_lib.hlsl"
+#include "Assets/Resources/common/common.hh"
+#include "Assets/Resources/common/fractal_noise.hh"
 
 // #include "draw_colormanagement_lib.glsl"
 // #include "draw_grease_pencil_lib.glsl"
@@ -79,7 +81,6 @@ FragOutput frag(Varyings IN)
     // {
         col = float4(1,1,1,1);
     // }
-    col.rgb *= col.a;
 
     /* Composite all other colors on top of texture color.
      * Everything is pre-multiply by `col.a` to have the stencil effect. */
@@ -93,28 +94,14 @@ FragOutput frag(Varyings IN)
                                             IN.aspect,
                                             IN.thickness.x,
                                             IN.hardness);
-    
     /* To avoid aliasing artifacts, we reduce the opacity of small strokes. */
     OUT.color *= smoothstep(0.0f, 1.0f, IN.thickness.y);
-    // /* Holdout materials. */
-    // if (flag_test(IN.mat_flag, GP_STROKE_HOLDOUT | GP_FILL_HOLDOUT))
-    // {
-    //     // OUT.revealColor = OUT.color.aaaa;
-    // }
-    // else
-    // {
-    //     /* NOT holdout materials.
-    //      * For compatibility with colored alpha buffer.
-    //      * Note that we are limited to mono-chromatic alpha blending here
-    //      * because of the blend equation and the limit of 1 color target
-    //      * when using custom color blending. */
-    //     // OUT.revealColor = float4(0.0f, 0.0f, 0.0f, OUT.color.a);
-    //
+    // OUT.color *= SimpleNoise_float(IN.uv, 5);
+
     if (OUT.color.a < 0.001f)
     {
         discard;
     }
-    // }
     return OUT;
 
     // float2 fb_size = max(float2(textureSize(gp_scene_depth_tx, 0).xy),

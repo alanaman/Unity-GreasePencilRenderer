@@ -6,9 +6,10 @@
 //if this stroke point has a parent, 0 otherwise
 #define STROKE_FLAG_IS_CHILD 1<<1
 #define STROKE_FLAG_IS_INVALID 1<<2
+#define PI          3.14159265358979323846
 
 
-struct StrokeData
+struct SilhouetteStrokeEdge
 {
     float3 pos; // Endpoints of the silhouette edge on this face
     int adj;    // Adjacent face index for each endpoint's edge (-1: no neighbor, -2: invalid stroke)
@@ -18,22 +19,22 @@ struct StrokeData
     
     uint rank;            // hop count to tail
     uint flags;
-    float distFromTail;   // cumulative geometric distance to tail (0 at tail)
-    
+    // float distFromTail;   // cumulative geometric distance to tail (0 at tail)
+    //
     uint totalStrokeLength; // total length of the stroke that contains this point
     
     uint strokePointsOffset; // Offset to the stroke points array
 };
 
-inline bool IsCyclic(StrokeData s)
+inline bool IsCyclic(SilhouetteStrokeEdge s)
 {
     return s.flags & STROKE_FLAG_CYCLIC;
 }
-inline bool IsChild(StrokeData s)
+inline bool IsChild(SilhouetteStrokeEdge s)
 {
     return s.flags & STROKE_FLAG_IS_CHILD;
 }
-inline bool IsInvalid(StrokeData s)
+inline bool IsInvalid(SilhouetteStrokeEdge s)
 {
     return s.flags & STROKE_FLAG_IS_INVALID;
 }

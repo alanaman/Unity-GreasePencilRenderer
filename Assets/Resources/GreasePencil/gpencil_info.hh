@@ -16,6 +16,7 @@ struct GreasePencilStrokeVert
     /** UV and opacity packed in the same attribute. */
     float2 uv_fill;
     float u_stroke, opacity;
+    float2 ss_pos;
 };
 
 struct GreasePencilColorVert {

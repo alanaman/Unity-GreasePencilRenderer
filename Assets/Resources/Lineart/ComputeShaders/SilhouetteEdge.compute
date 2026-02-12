@@ -15,7 +15,7 @@ StructuredBuffer<int> _Indices;         // Triangle indices (3 per triangle)
 StructuredBuffer<int> _AdjIndices;    // Adjacency info (3 indices per triangle, INVALID_UINT if none)
 
 // Output Buffer
-RWStructuredBuffer<StrokeData> _outStrokes;
+RWStructuredBuffer<SilhouetteStrokeEdge> _outStrokes;
 
 // Uniforms (constants)
 float3 _WorldSpaceCameraPos; // Camera position, set from C#

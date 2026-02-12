@@ -54,7 +54,7 @@ public class GreasePencilRenderer : MonoBehaviour
         matProps.SetBuffer("gp_materials", _materialBuffer);
 
         // Set the standard object-to-world matrix uniform.
-        matProps.SetMatrix("_ObjectToWorld", transform.localToWorldMatrix);
+        matProps.SetMatrix("_ObjectToWorld", Matrix4x4.identity);
         matProps.SetFloat("gp_layer_opacity", opacity);
         matProps.SetColor("gp_layer_tint", colorTint);
         
@@ -85,6 +85,7 @@ public class GreasePencilRenderer : MonoBehaviour
         // float u_stroke, opacity;
         public float u_stroke;
         public float opacity;
+        public float2 ss_pos;
         
         public static int SizeOf => Marshal.SizeOf(typeof(GreasePencilStrokeVert));
     };
@@ -172,10 +173,11 @@ public class GreasePencilRenderer : MonoBehaviour
                     sVert.packed_asp_hard_rot = 0; //todo
                     sVert.u_stroke = 0; //todo
                     sVert.uv_fill = float2.zero; //todo
+                    sVert.ss_pos = float2.zero; //todo
 
                     cVert.vcol = strokePoint.VertexColor;
                     cVert.fcol = Vector4.one;
-
+                    
                     // quad
                     int vertIdxMarkedStroke = ((vertsStartOffset + idx) << 2) | GP_IS_STROKE_VERTEX_BIT;
                     triangleIbo[triangleIboIndex + 0] = vertIdxMarkedStroke + 0;
@@ -197,9 +199,9 @@ public class GreasePencilRenderer : MonoBehaviour
         _gPencilIbo = new GraphicsBuffer(GraphicsBuffer.Target.Structured, triangleIbo.Length, sizeof(int));
         _gPencilIbo.SetData(triangleIbo);
         
-        _verts = new GraphicsBuffer(GraphicsBuffer.Target.Structured, verts.Length, sizeof(float)*4*3);
+        _verts = new GraphicsBuffer(GraphicsBuffer.Target.Structured, verts.Length, GreasePencilStrokeVert.SizeOf);
         _verts.SetData(verts);
-        _cols = new GraphicsBuffer(GraphicsBuffer.Target.Structured, verts.Length, sizeof(float)*4*2);
+        _cols = new GraphicsBuffer(GraphicsBuffer.Target.Structured, verts.Length, GreasePencilColorVert.SizeOf);
         _cols.SetData(cols);
 
         CreateMaterialBuffer();

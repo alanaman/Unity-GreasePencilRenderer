@@ -1,5 +1,7 @@
+#pragma once
+
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-#include "common_shader_util.hlsl"
+#include "Assets/Resources/common/common_shader_util.hlsl"
 #include "gpencil_info.hh"
 #include "gpencil_shader_shared.hh"
 
@@ -78,4 +80,74 @@ float gpencil_stroke_round_cap_mask(
         dist = pow(dist, lerp(0.01f, 10.0f, hardness));
         return smoothstep(0.0f, 1.0f, dist);
     }
+}
+
+
+bool g_pencil_is_stroke_vertex(uint vertexId)
+{
+    return flag_test(vertexId, (uint)GP_IS_STROKE_VERTEX_BIT);
+}
+
+inline bool is_cyclic(GreasePencilStrokeVert vert)
+{
+    return vert.signed_point_id < 0;
+}
+
+float2 g_pencil_project_to_screenspace(float4 v)
+{
+    return ((v.xy / v.w) * 0.5f + 0.5f) * _ScreenParams.xy;
+}
+
+float g_pencil_decode_hardness(int packed_data)
+{
+    return float((uint(packed_data) & 0x3FC0000u) >> 18u) * (1.0f / 255.0f);
+}
+
+float g_pencil_stroke_radius_modulate(float radius)
+{
+    float3x3 obj3x3 = (float3x3)unity_ObjectToWorld;
+    float3 scaled = mul(obj3x3, float3(radius * 0.57735, radius * 0.57735, radius * 0.57735));
+    radius = length(scaled);
+
+    float screen_radius = radius * -(UNITY_MATRIX_P[1][1]) * _ScreenParams.y;
+    
+    return screen_radius;
+}
+
+void g_pencil_color_output(out float4 color_mul, out float4 color_add, float4 stroke_col, float4 vert_col, float opacity, float mix_tex)
+{
+    /* Mix stroke with other colors. */
+    float4 mixed_col = stroke_col;
+    mixed_col.rgb = lerp(mixed_col.rgb, vert_col.rgb, vert_col.a * gp_vertex_color_opacity);
+    mixed_col.rgb = lerp(mixed_col.rgb, gp_layer_tint.rgb, gp_layer_tint.a);
+    mixed_col.a *= opacity * gp_layer_opacity;
+    /**
+     * This is what the fragment shader looks like.
+     * out = col * gp_interp.color_mul + col.a * gp_interp.color_add.
+     * gp_interp.color_mul is how much of the texture color to keep.
+     * gp_interp.color_add is how much of the mixed color to add.
+     * Note that we never add alpha. This is to keep the texture act as a stencil.
+     * We do however, modulate the alpha (reduce it).
+     */
+    /* We add the mixed color. This is 100% mix (no texture visible). */
+    color_mul = float4(mixed_col.aaa, mixed_col.a);
+    color_add = float4(mixed_col.rgb * mixed_col.a, 0.0f);
+    /* Then we blend according to the texture mix factor.
+     * Note that we keep the alpha modulation. */
+    color_mul.rgb *= mix_tex;
+    color_add.rgb *= 1.0f - mix_tex;
+}
+
+bool g_pencil_calculate_miter_dir(float2 edge_dir, float2 edge_adj_dir, bool is_stroke_endpoint, out float2 miter)
+{
+    /* Mitter tangent vector. */
+    float2 miter_tan = safe_normalize(edge_adj_dir + edge_dir);
+    float miter_dot = dot(miter_tan, edge_adj_dir);
+    /* Break corners after a certain angle to avoid really thick corners. */
+    const float miter_limit = 0.5f; /* cos(60 degrees) */
+    bool miter_break = (miter_dot < miter_limit);
+    miter_tan = (miter_break || is_stroke_endpoint) ? edge_dir : (miter_tan / miter_dot);
+    /* Rotate 90 degrees counter-clockwise. */
+    miter = float2(-miter_tan.y, miter_tan.x);
+    return miter_break;
 }

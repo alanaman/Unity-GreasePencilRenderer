@@ -13,7 +13,19 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
     private static readonly int ObjectToWorldIt = Shader.PropertyToID("_ObjectToWorldIT");
     private static readonly int NextPointerDst = Shader.PropertyToID("_nextPointerDst");
     private static readonly int NextPointerSrc = Shader.PropertyToID("_nextPointerSrc");
+    private static readonly int DenseNextPointerSrc = Shader.PropertyToID("_denseNextPointerSrc");
+    private static readonly int DenseNextPointerDst = Shader.PropertyToID("_denseNextPointerDst");
     private static readonly int RadiusMultiplier = Shader.PropertyToID("_radiusMultiplier");
+    private static readonly int LateralShiftFactor = Shader.PropertyToID("_LateralShiftFactor");
+    private static readonly int LateralShiftConstant = Shader.PropertyToID("_LateralShiftConstant");
+
+    private static readonly int GpObjectToWorld = Shader.PropertyToID("_GP_ObjectToWorld");
+    private static readonly int GpWorldToObject = Shader.PropertyToID("_GP_WorldToObject");
+    private static readonly int GpProj = Shader.PropertyToID("_GP_Proj");
+    private static readonly int GpViewProj = Shader.PropertyToID("_GP_ViewProj");
+    private static readonly int GpInvViewProj = Shader.PropertyToID("_GP_InvViewProj");
+    private static readonly int GpScreenParams = Shader.PropertyToID("_GP_ScreenParams");
+
     private const int ADJ_NONE = -1;
     private const int INVALID = -2;
 
@@ -28,6 +40,8 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     public Camera viewCamera;
     public float radiusMultiplier = 1.0f;
+    public float lateralShiftFactor = 0.0f;
+    public float lateralShiftConstant = 0.0f;
 
     private ComputeBuffer _verticesBuffer;
     private ComputeBuffer _indicesBuffer;
@@ -35,6 +49,9 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
     private ComputeBuffer _strokesBuffer;
     private ComputeBuffer _nextPointerSrcBuffer;
     private ComputeBuffer _nextPointerDstBuffer;
+    private ComputeBuffer _denseNextPointerSrcBuffer;
+    private ComputeBuffer _denseNextPointerDstBuffer;
+
     // Two 1-element buffers to be used as UAV atomic counters by the compute shader
     private ComputeBuffer _numStrokesCounterBuffer;
     private ComputeBuffer _numStrokePointsCounterBuffer;
@@ -58,6 +75,11 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
     private int _calcStrokeOffsets_Kernel;
     private int _invalidateEntries_Kernel;
     private int _sorter_Kernel;
+
+    private int _buildDenseNextPointers_Kernel;
+    private int _offsetDenseScreenPositions_Kernel;
+    private int _initDenseScreenDistances_Kernel;
+    private int _densePointerJumpDistances_Kernel;
 
     private const uint NUM_POINTER_JUMP_ITERATIONS = 8;
     private const float KERNEL_SIZE = 128.0f;
@@ -113,13 +135,18 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _reduce_Kernel = _sharpEdgesToStrokes.FindKernel("Reduce"); 
         _findStrokeTail_Kernel = _sharpEdgesToStrokes.FindKernel("FindStrokeTail");
         _resetNext_Kernel = _sharpEdgesToStrokes.FindKernel("ResetNextPointer");
-        _initDistances_Kernel = _sharpEdgesToStrokes.FindKernel("InitializeRanksAndDistances");
-        _listRank_Kernel = _sharpEdgesToStrokes.FindKernel("CalculateRanksAndDistances");
+        _initDistances_Kernel = _sharpEdgesToStrokes.FindKernel("InitializeRanks");
+        _listRank_Kernel = _sharpEdgesToStrokes.FindKernel("CalculateRanks");
 
         _setStrokeLengthAtTail_Kernel = _strokesToGreasePencilStrokes.FindKernel("SetStrokeLengthAtTail");
         _calcStrokeOffsets_Kernel = _strokesToGreasePencilStrokes.FindKernel("CalculateArrayOffsets");
         _invalidateEntries_Kernel = _strokesToGreasePencilStrokes.FindKernel("InvalidateEntries");
         _sorter_Kernel = _strokesToGreasePencilStrokes.FindKernel("MoveToDenseArray");
+
+        _buildDenseNextPointers_Kernel = _strokesToGreasePencilStrokes.FindKernel("BuildDenseNextPointers");
+        _offsetDenseScreenPositions_Kernel = _strokesToGreasePencilStrokes.FindKernel("OffsetDenseScreenPositions");
+        _initDenseScreenDistances_Kernel = _strokesToGreasePencilStrokes.FindKernel("InitDenseScreenDistances");
+        _densePointerJumpDistances_Kernel = _strokesToGreasePencilStrokes.FindKernel("DensePointerJumpDistances");
     }
     void InitializeBuffers()
     {
@@ -165,12 +192,15 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
     {
         //TODO: find a tighter limit for these buffer sizes
         //output buffers
-        _denseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
-        _colorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2 * FaceCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
+        _denseStrokesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, CornerCount, GreasePencilRenderer.GreasePencilStrokeVert.SizeOf);
+        _colorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, CornerCount, GreasePencilRenderer.GreasePencilColorVert.SizeOf);
 
         //offset calculation buffers
         _numStrokesCounterBuffer = new ComputeBuffer(1, sizeof(uint));
         _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
+
+        _denseNextPointerSrcBuffer = new ComputeBuffer(CornerCount, sizeof(int));
+        _denseNextPointerDstBuffer = new ComputeBuffer(CornerCount, sizeof(int));
     }
     
     [SuppressMessage("ReSharper", "Unity.PreferAddressByIdToGraphicsParams")]
@@ -204,6 +234,17 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_strokes", _strokesBuffer);
         _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_denseArray", _denseStrokesBuffer);
         _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_colorArray", _colorBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_buildDenseNextPointers_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_buildDenseNextPointers_Kernel, DenseNextPointerDst, _denseNextPointerDstBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_offsetDenseScreenPositions_Kernel, "_denseArray", _denseStrokesBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_initDenseScreenDistances_Kernel, "_denseArray", _denseStrokesBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseNextPointerSrc, _denseNextPointerSrcBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseNextPointerDst, _denseNextPointerDstBuffer);
     }
     
 
@@ -216,6 +257,17 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
     private void SwapNextPointers()
     {
         (_nextPointerSrcBuffer, _nextPointerDstBuffer) = (_nextPointerDstBuffer, _nextPointerSrcBuffer);
+    }
+
+    private void BindDenseNextPointers(int kernel)
+    {
+        _strokesToGreasePencilStrokes.SetBuffer(kernel, DenseNextPointerSrc, _denseNextPointerSrcBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(kernel, DenseNextPointerDst, _denseNextPointerDstBuffer);
+    }
+
+    private void SwapDenseNextPointers()
+    {
+        (_denseNextPointerSrcBuffer, _denseNextPointerDstBuffer) = (_denseNextPointerDstBuffer, _denseNextPointerSrcBuffer);
     }
 
     public void CalculateEdges()
@@ -233,7 +285,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         {
             _sharpSilhouetteEdgeFinder.Dispatch(_findSharpSilhouetteEdge_Kernel, threadGroups, 1, 1);
         }
-
+        DebugStrokes();
         RunEdgesToStrokePasses(threadGroups);
         RunStrokesToGreasePencilPass(threadGroups);
     }
@@ -274,19 +326,59 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
             _sharpEdgesToStrokes.Dispatch(_listRank_Kernel, threadGroups, 1, 1);
             SwapNextPointers();
         }
+        DebugStrokes();
     }
 
     private void RunStrokesToGreasePencilPass(int threadGroups)
     {
         _numStrokesCounterBuffer.SetData(new[] { 0u });
         _numStrokePointsCounterBuffer.SetData(new[] { 0u });
-            
+
         _strokesToGreasePencilStrokes.Dispatch(_setStrokeLengthAtTail_Kernel, threadGroups, 1, 1);
         _strokesToGreasePencilStrokes.Dispatch(_calcStrokeOffsets_Kernel, threadGroups, 1, 1);
         _strokesToGreasePencilStrokes.Dispatch(_invalidateEntries_Kernel, threadGroups, 1, 1);
-        
+
+        Matrix4x4 view = viewCamera.worldToCameraMatrix;
+        Matrix4x4 proj = GL.GetGPUProjectionMatrix(viewCamera.projectionMatrix, true);
+        Matrix4x4 viewProj = proj * view;
+        Matrix4x4 invViewProj = viewProj.inverse;
+
+        Matrix4x4 objectToWorld = transform.localToWorldMatrix;
+        Matrix4x4 worldToObject = transform.worldToLocalMatrix;
+
+        _strokesToGreasePencilStrokes.SetMatrix(GpObjectToWorld, objectToWorld);
+        _strokesToGreasePencilStrokes.SetMatrix(GpWorldToObject, worldToObject);
+        _strokesToGreasePencilStrokes.SetMatrix(GpProj, proj);
+        _strokesToGreasePencilStrokes.SetMatrix(GpViewProj, viewProj);
+        _strokesToGreasePencilStrokes.SetMatrix(GpInvViewProj, invViewProj);
+        _strokesToGreasePencilStrokes.SetVector(GpScreenParams, new Vector4(viewCamera.pixelWidth, viewCamera.pixelHeight, 1.0f + 1.0f / viewCamera.pixelWidth, 1.0f + 1.0f / viewCamera.pixelHeight));
+
         _strokesToGreasePencilStrokes.SetFloat(RadiusMultiplier, radiusMultiplier);
+        _strokesToGreasePencilStrokes.SetFloat(LateralShiftFactor, lateralShiftFactor);
+        _strokesToGreasePencilStrokes.SetFloat(LateralShiftConstant, lateralShiftConstant);
         _strokesToGreasePencilStrokes.Dispatch(_sorter_Kernel, threadGroups, 1, 1);
+        DebugGp();
+
+        int denseThreadGroups = Mathf.CeilToInt((2 * FaceCount) / KERNEL_SIZE);
+        if (denseThreadGroups <= 0) return;
+
+        _strokesToGreasePencilStrokes.Dispatch(_offsetDenseScreenPositions_Kernel, denseThreadGroups, 1, 1);
+        
+        BindDenseNextPointers(_buildDenseNextPointers_Kernel);
+        _strokesToGreasePencilStrokes.Dispatch(_buildDenseNextPointers_Kernel, denseThreadGroups, 1, 1);
+        SwapDenseNextPointers();
+
+
+        _strokesToGreasePencilStrokes.Dispatch(_initDenseScreenDistances_Kernel, denseThreadGroups, 1, 1);
+        DebugGp();
+
+        for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
+        {
+            BindDenseNextPointers(_densePointerJumpDistances_Kernel);
+            _strokesToGreasePencilStrokes.Dispatch(_densePointerJumpDistances_Kernel, denseThreadGroups, 1, 1);
+            SwapDenseNextPointers();
+        }
+        DebugGp();
     }
 
     private void DebugStrokes()
@@ -299,7 +391,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         {
             if (strokes[j].adj != INVALID && strokes[j].adj != ADJ_NONE)
             {
-                Debug.Log($"Stroke[{j}] pos={strokes[j].pos} adj={strokes[j].adj} minPoint={strokes[j].minPoint} rank={strokes[j].rank} dist={strokes[j].distFromTail:F4}");
+                Debug.Log($"Stroke[{j}] pos={strokes[j].pos} adj={strokes[j].adj} minPoint={strokes[j].minPoint} rank={strokes[j].rank}");
                 printCount++;
             }
         }
@@ -307,7 +399,7 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
 
     private void DebugGp()
     {
-        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[2*FaceCount];
+        var gpStrokes = new GreasePencilRenderer.GreasePencilStrokeVert[CornerCount];
         _denseStrokesBuffer.GetData(gpStrokes);
         
         for (int j = 0; j < gpStrokes.Length; j++)
@@ -324,6 +416,8 @@ public class SharpSilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCal
         _strokesBuffer?.Release();
         _nextPointerSrcBuffer?.Release();
         _nextPointerDstBuffer?.Release();
+        _denseNextPointerSrcBuffer?.Release();
+        _denseNextPointerDstBuffer?.Release();
         _numStrokesCounterBuffer?.Release();
         _numStrokePointsCounterBuffer?.Release();
         _denseStrokesBuffer?.Release();

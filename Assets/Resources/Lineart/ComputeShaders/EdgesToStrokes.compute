@@ -1,12 +1,13 @@
 #pragma kernel Initialize
-#pragma kernel CalculateRanksAndDistances
+#pragma kernel CalculateRanks
 #pragma kernel FindStrokeTail
 #pragma kernel ResetNextPointer
-#pragma kernel InitializeRanksAndDistances
+#pragma kernel InitializeRanks
 
 #include "silhouette_defines.hh"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-RWStructuredBuffer<StrokeData> _strokes; // read from silhouette pass (the same structured layout)
+RWStructuredBuffer<SilhouetteStrokeEdge> _strokes; // read from silhouette pass (the same structured layout)
 
 StructuredBuffer<int> _nextPointerSrc;
 RWStructuredBuffer<int> _nextPointerDst; // per-stroke successor index (adjacency)
@@ -28,7 +29,7 @@ void Initialize(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumFaces) return;
-    StrokeData s = _strokes[i];
+    SilhouetteStrokeEdge s = _strokes[i];
     _strokes[i].minPoint = i;
     _nextPointerDst[i] = s.adj;
 }
@@ -38,7 +39,7 @@ void ResetNextPointer(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumFaces) return;
-    StrokeData s = _strokes[i];
+    SilhouetteStrokeEdge s = _strokes[i];
     _nextPointerDst[i] = s.adj;
 }
 
@@ -49,7 +50,7 @@ bool lessThan(float3 a, float3 b)
     return a.z < b.z;
 }
 
-bool lessThan(StrokeData a, StrokeData b)
+bool lessThan(SilhouetteStrokeEdge a, SilhouetteStrokeEdge b)
 {
     if (a.adj != b.adj)
     {
@@ -68,7 +69,7 @@ void FindStrokeTail(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumFaces) return;
-    StrokeData s = _strokes[i];
+    SilhouetteStrokeEdge s = _strokes[i];
     
     if (IsInvalid(s))
     {
@@ -91,14 +92,13 @@ void FindStrokeTail(uint3 id : SV_DispatchThreadID)
 
 
 [numthreads(128,1,1)]
-void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
+void InitializeRanks(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumFaces) return;
-    StrokeData s = _strokes[i];
+    SilhouetteStrokeEdge s = _strokes[i];
     if (IsInvalid(s))
     {
-        _strokes[i].distFromTail = 0.0f;
         _strokes[i].rank = 0u;
         return;
     }
@@ -106,13 +106,11 @@ void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
     bool isTail = (i == s.minPoint) || s.adj == ADJ_NONE;
     if (isTail)
     {
-        _strokes[i].distFromTail = 0.0f;
         _strokes[i].rank = 0u;
     }
     else
     {
         float d = distance(s.pos, _strokes[s.adj].pos);
-        _strokes[i].distFromTail = d;
         _strokes[i].rank = 1u;
         
         _strokes[s.adj].flags |= STROKE_FLAG_IS_CHILD;
@@ -121,11 +119,11 @@ void InitializeRanksAndDistances(uint3 id : SV_DispatchThreadID)
 
 // Pointer-jumping list ranking: compute distance-to-tail (float) and hop count
 [numthreads(128,1,1)]
-void CalculateRanksAndDistances(uint3 id : SV_DispatchThreadID)
+void CalculateRanks(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _NumFaces) return;
-    StrokeData si = _strokes[i];
+    SilhouetteStrokeEdge si = _strokes[i];
     if (IsInvalid(si))
     {
         _nextPointerDst[i] = INVALID_UINT;
@@ -144,8 +142,7 @@ void CalculateRanksAndDistances(uint3 id : SV_DispatchThreadID)
 
     bool succIsTail = (succ == si.minPoint);
 
-    StrokeData ss = _strokes[succ];
-    _strokes[i].distFromTail += ss.distFromTail;
+    SilhouetteStrokeEdge ss = _strokes[succ];
     _strokes[i].rank += ss.rank;
 
     if (succIsTail)

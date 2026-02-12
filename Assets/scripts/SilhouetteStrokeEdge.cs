@@ -10,7 +10,7 @@ public struct SilhouetteStrokeEdge
     public uint minPoint;
     public uint rank;            // hop count to tail
     public uint flags;
-    public float distFromTail;   // cumulative geometric distance to tail (0 at tail)
+    // public float distFromTail;   // cumulative geometric distance to tail (0 at tail)
 
     public uint totalStrokeLength; // total length of the stroke that contains this point
 

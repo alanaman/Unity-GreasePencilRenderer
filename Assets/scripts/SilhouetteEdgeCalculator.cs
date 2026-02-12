@@ -5,7 +5,6 @@ using UnityEngine;
 using System.Runtime.InteropServices;
 using DefaultNamespace;
 using UnityEditor;
-using System.Linq;
 
 public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculator
 {
@@ -17,7 +16,17 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private static readonly int ObjectToWorld = Shader.PropertyToID("_ObjectToWorld");
     private static readonly int NextPointerSrc = Shader.PropertyToID("_nextPointerSrc");
     private static readonly int NextPointerDst = Shader.PropertyToID("_nextPointerDst");
+    private static readonly int DenseNextPointerSrc = Shader.PropertyToID("_denseNextPointerSrc");
+    private static readonly int DenseNextPointerDst = Shader.PropertyToID("_denseNextPointerDst");
     private static readonly int RadiusMultiplier = Shader.PropertyToID("_radiusMultiplier");
+    private static readonly int LateralShiftFactor = Shader.PropertyToID("_LateralShiftFactor");
+    private static readonly int LateralShiftConstant = Shader.PropertyToID("_LateralShiftConstant");
+
+    private static readonly int GpObjectToWorld = Shader.PropertyToID("_GP_ObjectToWorld");
+    private static readonly int GpWorldToObject = Shader.PropertyToID("_GP_WorldToObject");
+    private static readonly int GpViewProj = Shader.PropertyToID("_GP_ViewProj");
+    private static readonly int GpInvViewProj = Shader.PropertyToID("_GP_InvViewProj");
+    private static readonly int GpScreenParams = Shader.PropertyToID("_GP_ScreenParams");
 
     // Public assets / parameters
     private ComputeShader _silhouetteEdgeFinder;
@@ -30,6 +39,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     
     public Camera viewCamera;
     public float radiusMultiplier = 1.0f;
+    public float lateralShiftFactor = 0.0f;
+    public float lateralShiftConstant = 0.0f;
 
 
     // Compute buffers
@@ -39,6 +50,9 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private ComputeBuffer _strokesBuffer;
     private ComputeBuffer _nextPointerSrcBuffer;
     private ComputeBuffer _nextPointerDstBuffer;
+    private ComputeBuffer _denseNextPointerSrcBuffer;
+    private ComputeBuffer _denseNextPointerDstBuffer;
+
     // Two 1-element buffers to be used as UAV atomic counters by the compute shader
     private ComputeBuffer _numStrokesCounterBuffer;
     private ComputeBuffer _numStrokePointsCounterBuffer;
@@ -60,6 +74,10 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private int _calcStrokeOffsets_Kernel;
     private int _invalidateEntries_Kernel;
     private int _sorter_Kernel;
+    private int _buildDenseNextPointers_Kernel;
+    private int _offsetDenseScreenPositions_Kernel;
+    private int _initDenseScreenDistances_Kernel;
+    private int _densePointerJumpDistances_Kernel;
 
 
     private const uint NUM_POINTER_JUMP_ITERATIONS = 8;
@@ -102,6 +120,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _strokesBuffer?.Release();
         _nextPointerSrcBuffer?.Release();
         _nextPointerDstBuffer?.Release();
+        _denseNextPointerSrcBuffer?.Release();
+        _denseNextPointerDstBuffer?.Release();
         _numStrokesCounterBuffer?.Release();
         _numStrokePointsCounterBuffer?.Release();
         _denseStrokesBuffer?.Release();
@@ -119,13 +139,17 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _initialize_Kernel = _edgesToStrokes.FindKernel("Initialize");
         _findStrokeTail_Kernel = _edgesToStrokes.FindKernel("FindStrokeTail");
         _resetNext_Kernel = _edgesToStrokes.FindKernel("ResetNextPointer");
-        _initDistances_Kernel = _edgesToStrokes.FindKernel("InitializeRanksAndDistances");
-        _listRank_Kernel = _edgesToStrokes.FindKernel("CalculateRanksAndDistances");
+        _initDistances_Kernel = _edgesToStrokes.FindKernel("InitializeRanks");
+        _listRank_Kernel = _edgesToStrokes.FindKernel("CalculateRanks");
 
         _setStrokeLengthAtTail_Kernel = _strokesToGreasePencilStrokes.FindKernel("SetStrokeLengthAtTail");
         _calcStrokeOffsets_Kernel = _strokesToGreasePencilStrokes.FindKernel("CalculateArrayOffsets");
         _invalidateEntries_Kernel = _strokesToGreasePencilStrokes.FindKernel("InvalidateEntries");
         _sorter_Kernel = _strokesToGreasePencilStrokes.FindKernel("MoveToDenseArray");
+        _buildDenseNextPointers_Kernel = _strokesToGreasePencilStrokes.FindKernel("BuildDenseNextPointers");
+        _offsetDenseScreenPositions_Kernel = _strokesToGreasePencilStrokes.FindKernel("OffsetDenseScreenPositions");
+        _initDenseScreenDistances_Kernel = _strokesToGreasePencilStrokes.FindKernel("InitDenseScreenDistances");
+        _densePointerJumpDistances_Kernel = _strokesToGreasePencilStrokes.FindKernel("DensePointerJumpDistances");
     }
 
     void InitializeBuffers()
@@ -175,6 +199,10 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         //offset calculation buffers
         _numStrokesCounterBuffer = new ComputeBuffer(1, sizeof(uint));
         _numStrokePointsCounterBuffer = new ComputeBuffer(1, sizeof(uint));
+
+        int denseCapacity = 2 * FaceCount;
+        _denseNextPointerSrcBuffer = new ComputeBuffer(denseCapacity, sizeof(int));
+        _denseNextPointerDstBuffer = new ComputeBuffer(denseCapacity, sizeof(int));
     }
 
     [SuppressMessage("ReSharper", "Unity.PreferAddressByIdToGraphicsParams")]
@@ -194,7 +222,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _edgesToStrokes.SetBuffer(_initDistances_Kernel, "_strokes", _strokesBuffer);
         
         _strokesToGreasePencilStrokes.SetInt("_NumFaces", FaceCount);
-        
+
         _strokesToGreasePencilStrokes.SetBuffer(_setStrokeLengthAtTail_Kernel, "_strokes", _strokesBuffer);
         
         _strokesToGreasePencilStrokes.SetBuffer(_calcStrokeOffsets_Kernel, "_strokes", _strokesBuffer);
@@ -206,6 +234,17 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_strokes", _strokesBuffer);
         _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_denseArray", _denseStrokesBuffer);
         _strokesToGreasePencilStrokes.SetBuffer(_sorter_Kernel, "_colorArray", _colorBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_buildDenseNextPointers_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_buildDenseNextPointers_Kernel, DenseNextPointerDst, _denseNextPointerDstBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_offsetDenseScreenPositions_Kernel, "_denseArray", _denseStrokesBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_initDenseScreenDistances_Kernel, "_denseArray", _denseStrokesBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseNextPointerSrc, _denseNextPointerSrcBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseNextPointerDst, _denseNextPointerDstBuffer);
     }
 
     private void BindNextPointers(int kernel)
@@ -217,6 +256,17 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private void SwapNextPointers()
     {
         (_nextPointerSrcBuffer, _nextPointerDstBuffer) = (_nextPointerDstBuffer, _nextPointerSrcBuffer);
+    }
+
+    private void BindDenseNextPointers(int kernel)
+    {
+        _strokesToGreasePencilStrokes.SetBuffer(kernel, DenseNextPointerSrc, _denseNextPointerSrcBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(kernel, DenseNextPointerDst, _denseNextPointerDstBuffer);
+    }
+
+    private void SwapDenseNextPointers()
+    {
+        (_denseNextPointerSrcBuffer, _denseNextPointerDstBuffer) = (_denseNextPointerDstBuffer, _denseNextPointerSrcBuffer);
     }
 
     public void CalculateEdges()
@@ -305,7 +355,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         {
             if (strokes[j].adj != ADJ_NONE)
             {
-                Debug.Log($"Stroke[{j}] pos={strokes[j].pos} adj={strokes[j].adj} minPoint={strokes[j].minPoint} rank={strokes[j].rank} dist={strokes[j].distFromTail:F4}");
+                Debug.Log($"Stroke[{j}] pos={strokes[j].pos} adj={strokes[j].adj} minPoint={strokes[j].minPoint} rank={strokes[j].rank}");
                 printCount++;
             }
         }
@@ -320,8 +370,42 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _strokesToGreasePencilStrokes.Dispatch(_calcStrokeOffsets_Kernel, threadGroups, 1, 1);
         _strokesToGreasePencilStrokes.Dispatch(_invalidateEntries_Kernel, threadGroups, 1, 1);
 
+        Matrix4x4 view = viewCamera.worldToCameraMatrix;
+        Matrix4x4 proj = GL.GetGPUProjectionMatrix(viewCamera.projectionMatrix, true);
+        Matrix4x4 viewProj = proj * view;
+        Matrix4x4 invViewProj = viewProj.inverse;
+
+        Matrix4x4 objectToWorld = transform.localToWorldMatrix;
+        Matrix4x4 worldToObject = transform.worldToLocalMatrix;
+
+        _strokesToGreasePencilStrokes.SetMatrix(GpObjectToWorld, objectToWorld);
+        _strokesToGreasePencilStrokes.SetMatrix(GpWorldToObject, worldToObject);
+        _strokesToGreasePencilStrokes.SetMatrix(GpViewProj, viewProj);
+        _strokesToGreasePencilStrokes.SetMatrix(GpInvViewProj, invViewProj);
+        _strokesToGreasePencilStrokes.SetVector(GpScreenParams, new Vector4(viewCamera.pixelWidth, viewCamera.pixelHeight, 1.0f + 1.0f / viewCamera.pixelWidth, 1.0f + 1.0f / viewCamera.pixelHeight));
+
         _strokesToGreasePencilStrokes.SetFloat(RadiusMultiplier, radiusMultiplier);
+        _strokesToGreasePencilStrokes.SetFloat(LateralShiftFactor, lateralShiftFactor);
+        _strokesToGreasePencilStrokes.SetFloat(LateralShiftConstant, lateralShiftConstant);
         _strokesToGreasePencilStrokes.Dispatch(_sorter_Kernel, threadGroups, 1, 1);
+
+        int denseThreadGroups = Mathf.CeilToInt((2 * FaceCount) / KERNEL_SIZE);
+        if (denseThreadGroups <= 0) return;
+
+        BindDenseNextPointers(_buildDenseNextPointers_Kernel);
+        _strokesToGreasePencilStrokes.Dispatch(_buildDenseNextPointers_Kernel, denseThreadGroups, 1, 1);
+        SwapDenseNextPointers();
+
+        _strokesToGreasePencilStrokes.Dispatch(_offsetDenseScreenPositions_Kernel, denseThreadGroups, 1, 1);
+
+        _strokesToGreasePencilStrokes.Dispatch(_initDenseScreenDistances_Kernel, denseThreadGroups, 1, 1);
+
+        for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
+        {
+            BindDenseNextPointers(_densePointerJumpDistances_Kernel);
+            _strokesToGreasePencilStrokes.Dispatch(_densePointerJumpDistances_Kernel, denseThreadGroups, 1, 1);
+            SwapDenseNextPointers();
+        }
     }
 
     private void DebugGp()
@@ -353,107 +437,108 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         }
     }
 
-private static int[] CalculateAdjacency(int[] triangles, Vector3[] vertices, float epsilon = 0.0001f)
-{
-    if (triangles == null) throw new ArgumentNullException(nameof(triangles));
-    int faceCount = triangles.Length / 3;
-    int[] adj = new int[triangles.Length];
-    for (int i = 0; i < adj.Length; i++) adj[i] = -1; // ADJ_NONE
+    private static int[] CalculateAdjacency(int[] triangles, Vector3[] vertices, float epsilon = 0.0001f)
+    {
+        if (triangles == null) throw new ArgumentNullException(nameof(triangles));
+        int faceCount = triangles.Length / 3;
+        int[] adj = new int[triangles.Length];
+        for (int i = 0; i < adj.Length; i++) adj[i] = -1; // ADJ_NONE
 
-    // 1. Create a map where every vertex points to a "master" vertex at the same position
-    int[] vertexMap = new int[vertices.Length];
-    // Use a dictionary to group vertices by position bucket/hash
-    var posDict = new Dictionary<Vector3, int>(vertices.Length); 
+        // 1. Create a map where every vertex points to a "master" vertex at the same position
+        int[] vertexMap = new int[vertices.Length];
+        // Use a dictionary to group vertices by position bucket/hash
+        var posDict = new Dictionary<Vector3, int>(vertices.Length); 
     
-    // Note: Vector3 equality usually has issues with floats, but Unity/System.Numerics
-    // Structs often implement decent hash codes. For high robustness, you might need
-    // to Quantize the position or use a specialized comparer.
-    for (int i = 0; i < vertices.Length; i++)
-    {
-        if (posDict.TryGetValue(vertices[i], out int masterIndex))
+        // Note: Vector3 equality usually has issues with floats, but Unity/System.Numerics
+        // Structs often implement decent hash codes. For high robustness, you might need
+        // to Quantize the position or use a specialized comparer.
+        for (int i = 0; i < vertices.Length; i++)
         {
-            vertexMap[i] = masterIndex;
-        }
-        else
-        {
-            posDict[vertices[i]] = i;
-            vertexMap[i] = i;
-        }
-    }
-
-    var edgeToFaces = new Dictionary<long, List<int>>(triangles.Length);
-
-    // 2. Build Edge Dictionary using the REMAPPED indices
-    for (int f = 0; f < faceCount; f++)
-    {
-        int baseIdx = f * 3;
-        // Get original indices
-        int v0 = triangles[baseIdx + 0];
-        int v1 = triangles[baseIdx + 1];
-        int v2 = triangles[baseIdx + 2];
-
-        // Convert to unique spatial indices
-        int u0 = vertexMap[v0];
-        int u1 = vertexMap[v1];
-        int u2 = vertexMap[v2];
-
-        // Define edges using unique indices
-        long[] keys = new long[3];
-        keys[0] = MakeEdgeKey(u0, u1);
-        keys[1] = MakeEdgeKey(u1, u2);
-        keys[2] = MakeEdgeKey(u2, u0);
-
-        for (int e = 0; e < 3; e++)
-        {
-            if (!edgeToFaces.TryGetValue(keys[e], out var list))
+            if (posDict.TryGetValue(vertices[i], out int masterIndex))
             {
-                list = new List<int>();
-                edgeToFaces[keys[e]] = list;
+                vertexMap[i] = masterIndex;
             }
-            list.Add(f);
-        }
-    }
-
-    // 3. Resolve Adjacency
-    for (int f = 0; f < faceCount; f++)
-    {
-        int baseIdx = f * 3;
-        int v0 = triangles[baseIdx + 0];
-        int v1 = triangles[baseIdx + 1];
-        int v2 = triangles[baseIdx + 2];
-
-        // Must use the same mapping here
-        int u0 = vertexMap[v0];
-        int u1 = vertexMap[v1];
-        int u2 = vertexMap[v2];
-
-        long[] keys = new long[3];
-        keys[0] = MakeEdgeKey(u0, u1);
-        keys[1] = MakeEdgeKey(u1, u2);
-        keys[2] = MakeEdgeKey(u2, u0);
-
-        for (int e = 0; e < 3; e++)
-        {
-            var faces = edgeToFaces[keys[e]];
-            // With split vertices, an edge might have more than 2 faces touching it
-            // if the geometry is non-manifold. But for standard adjacency,
-            // we just want the "other" face.
-            foreach (var other in faces)
+            else
             {
-                if (other != f)
+                posDict[vertices[i]] = i;
+                vertexMap[i] = i;
+            }
+        }
+
+        var edgeToFaces = new Dictionary<long, List<int>>(triangles.Length);
+
+        // 2. Build Edge Dictionary using the REMAPPED indices
+        for (int f = 0; f < faceCount; f++)
+        {
+            int baseIdx = f * 3;
+            // Get original indices
+            int v0 = triangles[baseIdx + 0];
+            int v1 = triangles[baseIdx + 1];
+            int v2 = triangles[baseIdx + 2];
+
+            // Convert to unique spatial indices
+            int u0 = vertexMap[v0];
+            int u1 = vertexMap[v1];
+            int u2 = vertexMap[v2];
+
+            // Define edges using unique indices
+            long[] keys = new long[3];
+            keys[0] = MakeEdgeKey(u0, u1);
+            keys[1] = MakeEdgeKey(u1, u2);
+            keys[2] = MakeEdgeKey(u2, u0);
+
+            for (int e = 0; e < 3; e++)
+            {
+                if (!edgeToFaces.TryGetValue(keys[e], out var list))
                 {
-                    adj[baseIdx + e] = other;
-                    break;
+                    list = new List<int>();
+                    edgeToFaces[keys[e]] = list;
+                }
+                list.Add(f);
+            }
+        }
+
+        // 3. Resolve Adjacency
+        for (int f = 0; f < faceCount; f++)
+        {
+            int baseIdx = f * 3;
+            int v0 = triangles[baseIdx + 0];
+            int v1 = triangles[baseIdx + 1];
+            int v2 = triangles[baseIdx + 2];
+
+            // Must use the same mapping here
+            int u0 = vertexMap[v0];
+            int u1 = vertexMap[v1];
+            int u2 = vertexMap[v2];
+
+            long[] keys = new long[3];
+            keys[0] = MakeEdgeKey(u0, u1);
+            keys[1] = MakeEdgeKey(u1, u2);
+            keys[2] = MakeEdgeKey(u2, u0);
+
+            for (int e = 0; e < 3; e++)
+            {
+                var faces = edgeToFaces[keys[e]];
+                // With split vertices, an edge might have more than 2 faces touching it
+                // if the geometry is non-manifold. But for standard adjacency,
+                // we just want the "other" face.
+                foreach (var other in faces)
+                {
+                    if (other != f)
+                    {
+                        adj[baseIdx + e] = other;
+                        break;
+                    }
                 }
             }
         }
+
+        return adj;
     }
 
-    return adj;
-}
+    private static long MakeEdgeKey(int i1, int i2)
+    {
+        return ((long)Math.Min(i1, i2) << 32) | (uint)Math.Max(i1, i2);
+    }
 
-private static long MakeEdgeKey(int i1, int i2)
-{
-    return ((long)Math.Min(i1, i2) << 32) | (uint)Math.Max(i1, i2);
-}
 }
