@@ -10,7 +10,7 @@ Varyings vert(Attributes IN)
 {
     Varyings OUT;
     
-    unity_ObjectToWorld = _ObjectToWorld;
+    // unity_ObjectToWorld = _ObjectToWorld;
     uint vertexId = IN.vertexId;
     
     int stroke_point_id = (vertexId & ~GP_IS_STROKE_VERTEX_BIT) >> GP_VERTEX_ID_SHIFT;

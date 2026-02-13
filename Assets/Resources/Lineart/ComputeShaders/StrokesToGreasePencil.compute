@@ -187,7 +187,8 @@ void MoveToDenseArray(uint3 id : SV_DispatchThreadID)
     uint globalOffset = tail.strokePointsOffset + offsetInStroke;
 
     GreasePencilStrokeVert gpVert;
-    gpVert.pos = mul(_GP_ObjectToWorld, float4(s.pos, 1.0f)).xyz;
+    gpVert.pos = s.pos;
+    // gpVert.pos = mul(_GP_ObjectToWorld, float4(s.pos, 1.0f)).xyz;
     gpVert.radius = _radiusMultiplier;
 
     gpVert.mat = 0;
@@ -416,12 +417,12 @@ void OffsetDenseScreenPositions(uint3 id : SV_DispatchThreadID)
     /* The radius attribute can have negative values. Make sure that it's not negative by clamping to 0. */
     float radius = stroke_radius_modulate(strokeVert.radius);
     float clamped_radius = max(0.0f, radius);
-    float shift_px = clamped_radius * _LateralShiftFactor + _LateralShiftConstant;
     // float2 pixelOffset = offset_dir * _GP_ScreenParams.xy * shift_px;
     float3 worldPos = strokeVert.pos;
     float4 ndc = mul(_GP_ViewProj, float4(worldPos, 1.0f));
     
-    float2 pixelOffset = miter * shift_px/ndc.w;
+    float shift = clamped_radius/ndc.w * _LateralShiftFactor + _LateralShiftConstant;
+    float2 pixelOffset = miter * shift;
 
     // float3 worldDelta = ScreenPixelOffsetToWorldDelta(strokeVert.pos, pixelOffset);
     float3 worldDelta;
@@ -434,8 +435,10 @@ void OffsetDenseScreenPositions(uint3 id : SV_DispatchThreadID)
         float2 basePixel = ((ndc.xy / ndc.w) * 0.5f + 0.5f) * _GP_ScreenParams.xy;
         float ndcZ = ndc.z / ndc.w;
 
-        float2 ndc0 = PixelToNdcXY(basePixel);
-        float2 ndc1 = PixelToNdcXY(basePixel + pixelOffset);
+        // float2 ndc0 = PixelToNdcXY(basePixel);
+        // float2 ndc1 = PixelToNdcXY(basePixel + pixelOffset);
+        float2 ndc0 = ndc.xy/ndc.w;
+        float2 ndc1 = ndc0+pixelOffset/_GP_ScreenParams.xy;
 
         float3 world0 = UnprojectWorldFromNdc(ndc0, ndcZ);
         float3 world1 = UnprojectWorldFromNdc(ndc1, ndcZ);

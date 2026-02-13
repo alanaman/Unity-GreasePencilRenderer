@@ -11,7 +11,7 @@
 
 struct SilhouetteStrokeEdge
 {
-    float3 pos; // Endpoints of the silhouette edge on this face
+    float3 pos; // world position of the Endpoints of the silhouette edge on this face
     int adj;    // Adjacent face index for each endpoint's edge (-1: no neighbor, -2: invalid stroke)
     float3 faceNormal; // face normal in world space
     

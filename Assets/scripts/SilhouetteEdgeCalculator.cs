@@ -24,6 +24,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
 
     private static readonly int GpObjectToWorld = Shader.PropertyToID("_GP_ObjectToWorld");
     private static readonly int GpWorldToObject = Shader.PropertyToID("_GP_WorldToObject");
+    private static readonly int GpProj = Shader.PropertyToID("_GP_Proj");
     private static readonly int GpViewProj = Shader.PropertyToID("_GP_ViewProj");
     private static readonly int GpInvViewProj = Shader.PropertyToID("_GP_InvViewProj");
     private static readonly int GpScreenParams = Shader.PropertyToID("_GP_ScreenParams");
@@ -380,6 +381,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
 
         _strokesToGreasePencilStrokes.SetMatrix(GpObjectToWorld, objectToWorld);
         _strokesToGreasePencilStrokes.SetMatrix(GpWorldToObject, worldToObject);
+        _strokesToGreasePencilStrokes.SetMatrix(GpProj, proj);
         _strokesToGreasePencilStrokes.SetMatrix(GpViewProj, viewProj);
         _strokesToGreasePencilStrokes.SetMatrix(GpInvViewProj, invViewProj);
         _strokesToGreasePencilStrokes.SetVector(GpScreenParams, new Vector4(viewCamera.pixelWidth, viewCamera.pixelHeight, 1.0f + 1.0f / viewCamera.pixelWidth, 1.0f + 1.0f / viewCamera.pixelHeight));

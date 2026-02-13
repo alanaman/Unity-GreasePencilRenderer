@@ -187,7 +187,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &196476344
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -887,7 +887,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::SharpSilhouetteEdgeCalculator
   viewCamera: {fileID: 0}
   radiusMultiplier: 0.1
-  lateralShiftFactor: 0.5
+  lateralShiftFactor: 1
   lateralShiftConstant: 0
 --- !u!4 &934343666
 Transform:

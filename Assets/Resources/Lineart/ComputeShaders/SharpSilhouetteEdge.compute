@@ -125,7 +125,7 @@ void FindSilhouetteEdge(uint3 id : SV_DispatchThreadID)
     w0.normal = normalize(mul(nit, vert.normal));
     w1.normal = normalize(mul(nit, adjVert.normal));
 
-    _outStrokes[vertIdx].pos = vert.position;
+    _outStrokes[vertIdx].pos = w0.position;
     // if edge between faces of vert and adjVert form a silhouette edge
     if (dot(vert.normal, normalize(_WorldSpaceCameraPos - vert.position)) > 0.0f && 
         dot(adjVert.normal, normalize(_WorldSpaceCameraPos - adjVert.position)) < 0.0f)
