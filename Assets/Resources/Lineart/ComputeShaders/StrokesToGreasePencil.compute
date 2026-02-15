@@ -6,6 +6,7 @@
 #pragma kernel OffsetDenseScreenPositions
 #pragma kernel InitDenseScreenDistances
 #pragma kernel DensePointerJumpDistances
+#pragma kernel FinalizeDenseScreenDistances
 
 #include "silhouette_defines.hh"
 #include "Assets/Resources/GreasePencil/gpencil_info.hh"
@@ -25,6 +26,9 @@ RWStructuredBuffer<GreasePencilColorVert> _colorArray;
 
 StructuredBuffer<int> _denseNextPointerSrc;
 RWStructuredBuffer<int> _denseNextPointerDst;
+
+StructuredBuffer<float> _denseUStrokeSrc;
+RWStructuredBuffer<float> _denseUStrokeDst;
 
 float4x4 _GP_ObjectToWorld;
 float4x4 _GP_WorldToObject;
@@ -260,7 +264,7 @@ void InitDenseScreenDistances(uint3 id : SV_DispatchThreadID)
     GreasePencilStrokeVert v = _denseArray[i];
     if (v.mat < 0)
     {
-        _denseArray[i].u_stroke = 0.0f;
+        _denseUStrokeDst[i] = 0.0f;
         return;
     }
 
@@ -276,7 +280,7 @@ void InitDenseScreenDistances(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    _denseArray[i].u_stroke = d;
+    _denseUStrokeDst[i] = d;
 }
 
 [numthreads(128,1,1)]
@@ -289,17 +293,30 @@ void DensePointerJumpDistances(uint3 id : SV_DispatchThreadID)
     if (v.mat < 0)
     {
         _denseNextPointerDst[i] = -1;
+        _denseUStrokeDst[i] = 0.0f;
         return;
     }
 
     int succ = _denseNextPointerSrc[i];
     _denseNextPointerDst[i] = succ;
-    if (succ < 0) return;
+    if (succ < 0)
+    {
+        _denseUStrokeDst[i] = _denseUStrokeSrc[i];
+        return;
+    }
 
-    _denseArray[i].u_stroke += _denseArray[succ].u_stroke;
+    _denseUStrokeDst[i] = _denseUStrokeSrc[i] + _denseUStrokeSrc[succ];
 
     int succ2 = _denseNextPointerSrc[succ];
     _denseNextPointerDst[i] = succ2;
+}
+
+[numthreads(128,1,1)]
+void FinalizeDenseScreenDistances(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _NumFaces) return;
+    _denseArray[i].u_stroke = _denseUStrokeSrc[i];
 }
 
 float2 safe_normalize_2d(float2 v)
@@ -320,8 +337,8 @@ int GetPrevPointIndex(int i, GreasePencilStrokeVert v)
     if (prev < 0)
     {
         return -1;
-    }    
-    
+    }
+
     GreasePencilStrokeVert vp = _denseArray[prev];
     if (vp.mat >= 0 && vp.stroke_id == v.stroke_id) return prev;
 

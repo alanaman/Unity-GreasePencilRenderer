@@ -41,7 +41,11 @@ float gpencil_decode_miter_limit(int packed_data)
     return cos(miter_angle);
 }
 
-
+/*
+ * 
+ * 
+ * 
+ */
 float gpencil_stroke_round_cap_mask(
     float2 p1, float2 p2, float2 fragPos, float2 aspect, float thickness, float hardfac)
 {
@@ -57,7 +61,6 @@ float gpencil_stroke_round_cap_mask(
     
     float2 p12 = p2.xy - p1.xy;
     float2 pos = float2(fragPos.x, fragPos.y) - p1.xy;
-    float pos_len = length(pos);
     float p12_len = length(p12);
     float half_p12_len = p12_len * 0.5f;
     /* Normalize */

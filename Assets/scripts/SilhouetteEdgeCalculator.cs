@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using UnityEngine;
 using System.Runtime.InteropServices;
+using System.Linq;
 using DefaultNamespace;
 using UnityEditor;
 
@@ -16,8 +17,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private static readonly int ObjectToWorld = Shader.PropertyToID("_ObjectToWorld");
     private static readonly int NextPointerSrc = Shader.PropertyToID("_nextPointerSrc");
     private static readonly int NextPointerDst = Shader.PropertyToID("_nextPointerDst");
+    private static readonly int RankSrc = Shader.PropertyToID("_rankSrc");
+    private static readonly int RankDst = Shader.PropertyToID("_rankDst");
     private static readonly int DenseNextPointerSrc = Shader.PropertyToID("_denseNextPointerSrc");
     private static readonly int DenseNextPointerDst = Shader.PropertyToID("_denseNextPointerDst");
+    private static readonly int DenseUStrokeSrc = Shader.PropertyToID("_denseUStrokeSrc");
+    private static readonly int DenseUStrokeDst = Shader.PropertyToID("_denseUStrokeDst");
     private static readonly int RadiusMultiplier = Shader.PropertyToID("_radiusMultiplier");
     private static readonly int LateralShiftFactor = Shader.PropertyToID("_LateralShiftFactor");
     private static readonly int LateralShiftConstant = Shader.PropertyToID("_LateralShiftConstant");
@@ -51,8 +56,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private ComputeBuffer _strokesBuffer;
     private ComputeBuffer _nextPointerSrcBuffer;
     private ComputeBuffer _nextPointerDstBuffer;
+    private ComputeBuffer _rankSrcBuffer;
+    private ComputeBuffer _rankDstBuffer;
     private ComputeBuffer _denseNextPointerSrcBuffer;
     private ComputeBuffer _denseNextPointerDstBuffer;
+    private ComputeBuffer _denseUStrokeSrcBuffer;
+    private ComputeBuffer _denseUStrokeDstBuffer;
 
     // Two 1-element buffers to be used as UAV atomic counters by the compute shader
     private ComputeBuffer _numStrokesCounterBuffer;
@@ -68,9 +77,9 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private int _initialize_Kernel;
     private int _findStrokeTail_Kernel;
     private int _resetNext_Kernel;
-    private int _initDistances_Kernel;
+    private int _initRanks_Kernel;
     private int _listRank_Kernel;
-
+    private int _finalizeRanks_Kernel;
     private int _setStrokeLengthAtTail_Kernel;
     private int _calcStrokeOffsets_Kernel;
     private int _invalidateEntries_Kernel;
@@ -79,6 +88,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private int _offsetDenseScreenPositions_Kernel;
     private int _initDenseScreenDistances_Kernel;
     private int _densePointerJumpDistances_Kernel;
+    private int _finalizeDenseScreenDistances_Kernel;
 
 
     private const uint NUM_POINTER_JUMP_ITERATIONS = 8;
@@ -121,8 +131,12 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _strokesBuffer?.Release();
         _nextPointerSrcBuffer?.Release();
         _nextPointerDstBuffer?.Release();
+        _rankSrcBuffer?.Release();
+        _rankDstBuffer?.Release();
         _denseNextPointerSrcBuffer?.Release();
         _denseNextPointerDstBuffer?.Release();
+        _denseUStrokeSrcBuffer?.Release();
+        _denseUStrokeDstBuffer?.Release();
         _numStrokesCounterBuffer?.Release();
         _numStrokePointsCounterBuffer?.Release();
         _denseStrokesBuffer?.Release();
@@ -140,9 +154,9 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _initialize_Kernel = _edgesToStrokes.FindKernel("Initialize");
         _findStrokeTail_Kernel = _edgesToStrokes.FindKernel("FindStrokeTail");
         _resetNext_Kernel = _edgesToStrokes.FindKernel("ResetNextPointer");
-        _initDistances_Kernel = _edgesToStrokes.FindKernel("InitializeRanks");
+        _initRanks_Kernel = _edgesToStrokes.FindKernel("InitializeRanks");
         _listRank_Kernel = _edgesToStrokes.FindKernel("CalculateRanks");
-
+        _finalizeRanks_Kernel = _edgesToStrokes.FindKernel("FinalizeRanks");
         _setStrokeLengthAtTail_Kernel = _strokesToGreasePencilStrokes.FindKernel("SetStrokeLengthAtTail");
         _calcStrokeOffsets_Kernel = _strokesToGreasePencilStrokes.FindKernel("CalculateArrayOffsets");
         _invalidateEntries_Kernel = _strokesToGreasePencilStrokes.FindKernel("InvalidateEntries");
@@ -151,6 +165,7 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _offsetDenseScreenPositions_Kernel = _strokesToGreasePencilStrokes.FindKernel("OffsetDenseScreenPositions");
         _initDenseScreenDistances_Kernel = _strokesToGreasePencilStrokes.FindKernel("InitDenseScreenDistances");
         _densePointerJumpDistances_Kernel = _strokesToGreasePencilStrokes.FindKernel("DensePointerJumpDistances");
+        _finalizeDenseScreenDistances_Kernel = _strokesToGreasePencilStrokes.FindKernel("FinalizeDenseScreenDistances");
     }
 
     void InitializeBuffers()
@@ -188,6 +203,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     {
         _nextPointerSrcBuffer = new ComputeBuffer(FaceCount, sizeof(int));
         _nextPointerDstBuffer = new ComputeBuffer(FaceCount, sizeof(int));
+        _rankSrcBuffer = new ComputeBuffer(FaceCount, sizeof(uint));
+        _rankDstBuffer = new ComputeBuffer(FaceCount, sizeof(uint));
     }
 
     void CreateBuffersForGreasePencilStrokes()
@@ -204,6 +221,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         int denseCapacity = 2 * FaceCount;
         _denseNextPointerSrcBuffer = new ComputeBuffer(denseCapacity, sizeof(int));
         _denseNextPointerDstBuffer = new ComputeBuffer(denseCapacity, sizeof(int));
+        _denseUStrokeSrcBuffer = new ComputeBuffer(denseCapacity, sizeof(float));
+        _denseUStrokeDstBuffer = new ComputeBuffer(denseCapacity, sizeof(float));
     }
 
     [SuppressMessage("ReSharper", "Unity.PreferAddressByIdToGraphicsParams")]
@@ -220,7 +239,8 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _edgesToStrokes.SetBuffer(_findStrokeTail_Kernel, "_strokes", _strokesBuffer);
         _edgesToStrokes.SetBuffer(_listRank_Kernel, "_strokes", _strokesBuffer);
         _edgesToStrokes.SetBuffer(_resetNext_Kernel, "_strokes", _strokesBuffer);
-        _edgesToStrokes.SetBuffer(_initDistances_Kernel, "_strokes", _strokesBuffer);
+        _edgesToStrokes.SetBuffer(_initRanks_Kernel, "_strokes", _strokesBuffer);
+        _edgesToStrokes.SetBuffer(_finalizeRanks_Kernel, "_strokes", _strokesBuffer);
         
         _strokesToGreasePencilStrokes.SetInt("_NumFaces", FaceCount);
 
@@ -242,10 +262,16 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _strokesToGreasePencilStrokes.SetBuffer(_offsetDenseScreenPositions_Kernel, "_denseArray", _denseStrokesBuffer);
 
         _strokesToGreasePencilStrokes.SetBuffer(_initDenseScreenDistances_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_initDenseScreenDistances_Kernel, DenseUStrokeDst, _denseUStrokeDstBuffer);
 
         _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, "_denseArray", _denseStrokesBuffer);
         _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseNextPointerSrc, _denseNextPointerSrcBuffer);
         _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseNextPointerDst, _denseNextPointerDstBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseUStrokeSrc, _denseUStrokeSrcBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_densePointerJumpDistances_Kernel, DenseUStrokeDst, _denseUStrokeDstBuffer);
+
+        _strokesToGreasePencilStrokes.SetBuffer(_finalizeDenseScreenDistances_Kernel, "_denseArray", _denseStrokesBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(_finalizeDenseScreenDistances_Kernel, DenseUStrokeSrc, _denseUStrokeSrcBuffer);
     }
 
     private void BindNextPointers(int kernel)
@@ -259,6 +285,17 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         (_nextPointerSrcBuffer, _nextPointerDstBuffer) = (_nextPointerDstBuffer, _nextPointerSrcBuffer);
     }
 
+    private void BindRankBuffers(int kernel)
+    {
+        _edgesToStrokes.SetBuffer(kernel, RankSrc, _rankSrcBuffer);
+        _edgesToStrokes.SetBuffer(kernel, RankDst, _rankDstBuffer);
+    }
+
+    private void SwapRankBuffers()
+    {
+        (_rankSrcBuffer, _rankDstBuffer) = (_rankDstBuffer, _rankSrcBuffer);
+    }
+
     private void BindDenseNextPointers(int kernel)
     {
         _strokesToGreasePencilStrokes.SetBuffer(kernel, DenseNextPointerSrc, _denseNextPointerSrcBuffer);
@@ -268,6 +305,17 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
     private void SwapDenseNextPointers()
     {
         (_denseNextPointerSrcBuffer, _denseNextPointerDstBuffer) = (_denseNextPointerDstBuffer, _denseNextPointerSrcBuffer);
+    }
+
+    private void BindDenseUStrokeBuffers(int kernel)
+    {
+        _strokesToGreasePencilStrokes.SetBuffer(kernel, DenseUStrokeSrc, _denseUStrokeSrcBuffer);
+        _strokesToGreasePencilStrokes.SetBuffer(kernel, DenseUStrokeDst, _denseUStrokeDstBuffer);
+    }
+
+    private void SwapDenseUStrokeBuffers()
+    {
+        (_denseUStrokeSrcBuffer, _denseUStrokeDstBuffer) = (_denseUStrokeDstBuffer, _denseUStrokeSrcBuffer);
     }
 
     public void CalculateEdges()
@@ -336,14 +384,21 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _edgesToStrokes.Dispatch(_resetNext_Kernel, threadGroups, 1, 1);
         SwapNextPointers();
 
-        _edgesToStrokes.Dispatch(_initDistances_Kernel, threadGroups, 1, 1);
+        BindRankBuffers(_initRanks_Kernel);
+        _edgesToStrokes.Dispatch(_initRanks_Kernel, threadGroups, 1, 1);
+        SwapRankBuffers();
 
         for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
         {
             BindNextPointers(_listRank_Kernel);
+            BindRankBuffers(_listRank_Kernel);
             _edgesToStrokes.Dispatch(_listRank_Kernel, threadGroups, 1, 1);
             SwapNextPointers();
+            SwapRankBuffers();
         }
+
+        BindRankBuffers(_finalizeRanks_Kernel);
+        _edgesToStrokes.Dispatch(_finalizeRanks_Kernel, threadGroups, 1, 1);
     }
 
     private void DebugStrokes()
@@ -401,13 +456,19 @@ public class SilhouetteEdgeCalculator : MonoBehaviour, IGreasePencilEdgeCalculat
         _strokesToGreasePencilStrokes.Dispatch(_offsetDenseScreenPositions_Kernel, denseThreadGroups, 1, 1);
 
         _strokesToGreasePencilStrokes.Dispatch(_initDenseScreenDistances_Kernel, denseThreadGroups, 1, 1);
+        SwapDenseUStrokeBuffers();
 
         for (int i = 0; i < NUM_POINTER_JUMP_ITERATIONS; ++i)
         {
             BindDenseNextPointers(_densePointerJumpDistances_Kernel);
+            BindDenseUStrokeBuffers(_densePointerJumpDistances_Kernel);
             _strokesToGreasePencilStrokes.Dispatch(_densePointerJumpDistances_Kernel, denseThreadGroups, 1, 1);
             SwapDenseNextPointers();
+            SwapDenseUStrokeBuffers();
         }
+
+        BindDenseUStrokeBuffers(_finalizeDenseScreenDistances_Kernel);
+        _strokesToGreasePencilStrokes.Dispatch(_finalizeDenseScreenDistances_Kernel, denseThreadGroups, 1, 1);
     }
 
     private void DebugGp()

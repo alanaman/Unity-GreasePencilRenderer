@@ -3,6 +3,7 @@
 #pragma kernel FindStrokeTail
 #pragma kernel ResetNextPointer
 #pragma kernel InitializeRanks
+#pragma kernel FinalizeRanks
 
 #include "silhouette_defines.hh"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -11,6 +12,9 @@ RWStructuredBuffer<SilhouetteStrokeEdge> _strokes; // read from silhouette pass 
 
 StructuredBuffer<int> _nextPointerSrc;
 RWStructuredBuffer<int> _nextPointerDst; // per-stroke successor index (adjacency)
+
+StructuredBuffer<uint> _rankSrc;
+RWStructuredBuffer<uint> _rankDst;
 
 uint _NumFaces;
 
@@ -99,19 +103,19 @@ void InitializeRanks(uint3 id : SV_DispatchThreadID)
     SilhouetteStrokeEdge s = _strokes[i];
     if (IsInvalid(s))
     {
-        _strokes[i].rank = 0u;
+        _rankDst[i] = 0u;
         return;
     }
 
     bool isTail = (i == s.minPoint) || s.adj == ADJ_NONE;
     if (isTail)
     {
-        _strokes[i].rank = 0u;
+        _rankDst[i] = 0u;
     }
     else
     {
         float d = distance(s.pos, _strokes[s.adj].pos);
-        _strokes[i].rank = 1u;
+        _rankDst[i] = 1u;
         
         _strokes[s.adj].flags |= STROKE_FLAG_IS_CHILD;
     }
@@ -127,6 +131,7 @@ void CalculateRanks(uint3 id : SV_DispatchThreadID)
     if (IsInvalid(si))
     {
         _nextPointerDst[i] = INVALID_UINT;
+        _rankDst[i] = 0u;
         return;
     }
 
@@ -134,23 +139,31 @@ void CalculateRanks(uint3 id : SV_DispatchThreadID)
     {
         if (si.adj != ADJ_NONE) _strokes[i].flags |= STROKE_FLAG_CYCLIC;
         _nextPointerDst[i] = _nextPointerSrc[i];
+        _rankDst[i] = _rankSrc[i];
         return;
     }
 
-    uint succ = _nextPointerSrc[i];
+    int succ = _nextPointerSrc[i];
     _nextPointerDst[i] = succ;
 
-    bool succIsTail = (succ == si.minPoint);
-
-    SilhouetteStrokeEdge ss = _strokes[succ];
-    _strokes[i].rank += ss.rank;
+    bool succIsTail = (succ == (int)si.minPoint);
+    uint succRank = succ >= 0 ? _rankSrc[succ] : 0u;
+    _rankDst[i] = _rankSrc[i] + succRank;
 
     if (succIsTail)
     {
         if (si.adj != ADJ_NONE) _strokes[i].flags |= STROKE_FLAG_CYCLIC;
     }
-    else
+    else if (succ >= 0)
     {
         _nextPointerDst[i] = _nextPointerSrc[succ];
     }
+}
+
+[numthreads(128,1,1)]
+void FinalizeRanks(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _NumFaces) return;
+    _strokes[i].rank = _rankSrc[i];
 }
